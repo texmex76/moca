@@ -125,10 +125,7 @@ const clause = struct {
     }
 };
 
-fn options(allocator: anytype) !void {
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
-
+fn options(args: [][:0]u8) !void {
     var limit_string: []const u8 = undefined;
     var limit_string_seen = false;
     var seed_string: []const u8 = undefined;
@@ -278,9 +275,14 @@ fn options(allocator: anytype) !void {
 pub fn main() !u8 {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
-    options(allocator) catch |err| switch (err) {
+
+    const args = try std.process.argsAlloc(allocator);
+    defer std.process.argsFree(allocator, args);
+    options(args) catch |err| switch (err) {
         error.Help => {},
         else => return err,
     };
+    try stdout.writer().print("verbosity: {d}\n", .{verbosity});
+    try stdout.writer().print("input path{s}\n", .{input_path});
     return 0;
 }
