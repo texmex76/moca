@@ -1,4 +1,5 @@
 const std = @import("std");
+const os = std.os;
 const stdout = std.io.getStdOut();
 const stderr = std.io.getStdErr();
 const ArrayList = std.ArrayList;
@@ -64,7 +65,7 @@ var best = invalid_minimum;
 var minimum_restarts: u64 = 0;
 var minimum_flipped: u64 = 0;
 var terminate: bool = false;
-var termination_signal: i32 = 0;
+var termination_signal: c_int = 0;
 
 const restart_scheduler_type = enum {
     never_restart,
@@ -203,8 +204,8 @@ fn options(args: [][:0]u8) !void {
                 try stderr.writer().print("multiple '-t' options ('-t {s}' and '-t {s}')\n", .{ timeout_string, arg });
                 return error.OptionsError;
             }
-            const seconds = try std.fmt.parseUnsigned(u64, arg, 10);
-            _ = seconds; // TODO: make timeout here
+            const seconds = try std.fmt.parseUnsigned(c_uint, arg, 10);
+            _ = std.c.alarm(seconds);
             timeout_string = arg;
             timeout_string_seen = true;
         } else if (std.mem.eql(u8, arg, "-n")) {
@@ -272,6 +273,53 @@ fn options(args: [][:0]u8) !void {
     }
 }
 
+fn message(comptime fmt: []const u8, args: anytype) !void {
+    if (verbosity < 0)
+        return;
+    try stdout.writer().print(fmt, args);
+    try stdout.writeAll("\n");
+}
+
+fn banner() !void {
+    try message("BabyWalk Local Search SAT Solver", .{});
+}
+
+fn catchSignal(sig: c_int) callconv(.C) void {
+    termination_signal = sig;
+    terminate = true;
+}
+
+fn init() void {
+    _ = os.linux.sigaction(os.linux.SIG.ALRM, &os.linux.Sigaction{
+        .handler = .{ .handler = catchSignal },
+        .mask = os.linux.empty_sigset,
+        .flags = 0,
+    }, null);
+    // Interrupt signal catching is a little strange in terminal.
+    // Not sure why. But it works.
+    _ = os.linux.sigaction(os.linux.SIG.INT, &os.linux.Sigaction{
+        .handler = .{ .handler = catchSignal },
+        .mask = os.linux.empty_sigset,
+        .flags = 0,
+    }, null);
+    // I get an error when I try to do the following and I don't know why
+    // _ = os.linux.sigaction(os.linux.SIG.KILL, &os.linux.Sigaction{
+    //     .handler = .{ .handler = catchSignal },
+    //     .mask = os.linux.empty_sigset,
+    //     .flags = 0,
+    // }, null);
+    _ = os.linux.sigaction(os.linux.SIG.SEGV, &os.linux.Sigaction{
+        .handler = .{ .handler = catchSignal },
+        .mask = os.linux.empty_sigset,
+        .flags = 0,
+    }, null);
+    _ = os.linux.sigaction(os.linux.SIG.TERM, &os.linux.Sigaction{
+        .handler = .{ .handler = catchSignal },
+        .mask = os.linux.empty_sigset,
+        .flags = 0,
+    }, null);
+}
+
 pub fn main() !u8 {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
@@ -279,10 +327,11 @@ pub fn main() !u8 {
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
     options(args) catch |err| switch (err) {
-        error.Help => {},
+        error.Help => return 0,
         else => return err,
     };
-    try stdout.writer().print("verbosity: {d}\n", .{verbosity});
-    try stdout.writer().print("input path{s}\n", .{input_path});
+    try banner();
+    init();
+
     return 0;
 }
