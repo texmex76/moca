@@ -2,7 +2,12 @@ const std = @import("std");
 const os = std.os;
 const stdout = std.io.getStdOut();
 const stderr = std.io.getStdErr();
+const stdin = std.io.getStdIn();
 const ArrayList = std.ArrayList;
+const assert = std.debug.assert;
+
+var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+const allocator = gpa.allocator();
 
 const usage =
     \\usage: babywalk [ -h ] [ <input> ]
@@ -44,17 +49,39 @@ const invalid_limit = ~@as(u64, 0);
 // Global state of the preprocessor
 var variables: i64 = 0;
 var found_empty_clause: bool = false;
-var clauses = ArrayList(*clause);
-var occurrences = ArrayList(*clause);
+var clauses: ArrayWithOffset(*clause) = undefined;
+var occurrences: ArrayWithOffset(*clause) = undefined;
+
+pub fn ArrayWithOffset(comptime T: type) type {
+    return struct {
+        comptime T: type = u64,
+        size: u64,
+        offset: u64,
+        data: []T,
+        const Self = @This();
+        fn init(size: u64, offset: u64) !Self {
+            const data = try allocator.alloc(T, size);
+            return Self{ .data = data, .size = size, .offset = offset };
+        }
+        fn get(self: *Self, idx: u64) !T {
+            assert(idx + self.offset < self.data.len);
+            return self.data[idx + self.offset];
+        }
+        fn set(self: *Self, idx: u64, it: T) !void {
+            assert(idx + self.offset < self.data.len);
+            self.data[idx + self.offset] = it;
+        }
+    };
+}
 
 // Part of the state needed for parsing and unit propagation
 var simplified = ArrayList(i32);
 var unsimplified = ArrayList(i32);
 var trail = ArrayList(i32);
 var propagated = ArrayList(u32);
-var values = ArrayList(i2);
-var marks = ArrayList(bool);
-var forced = ArrayList(bool);
+var values: ArrayWithOffset(i2) = undefined;
+var marks: ArrayWithOffset(bool) = undefined;
+var forced: ArrayWithOffset(bool) = undefined;
 
 // The state of the local search solver
 var unsatisfied = ArrayList(*clause);
@@ -94,7 +121,8 @@ var algorithm = algorithm_type.walksat_algorithm;
 var close_input: u2 = 0; // 0=stdin, 1=file, 2=pipe
 var input_path: []const u8 = undefined;
 var input_path_seen = false;
-var file = std.fs.File; // this is not going to work
+var file: std.fs.File = undefined;
+var input_file: std.fs.File.Reader = undefined;
 var lineno: u64 = 1;
 
 // Global Flags
@@ -320,10 +348,140 @@ fn init() void {
     }, null);
 }
 
-pub fn main() !u8 {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    const allocator = gpa.allocator();
+fn hasSuffix(str: []const u8, suffix: []const u8) bool {
+    const k = str.len;
+    const l = suffix.len;
+    return k >= l and std.mem.eql(u8, str[(k - l)..k], suffix);
+}
 
+fn next() !u8 {
+    var ch = input_file.readByte() catch 0;
+    if (ch == '\r') {
+        ch = input_file.readByte() catch 0;
+        if (ch != '\n') {
+            try stderr.writeAll("expected new-line after carriage return\n");
+            return error.NoNewLineAfterCarriageReturn;
+        }
+    }
+    if (ch == '\n')
+        lineno += 1;
+    return ch;
+}
+
+fn parse() !void {
+    const start = std.time.timestamp();
+
+    if (!input_path_seen or std.mem.eql(u8, input_path, "-")) {
+        input_file = stdin.reader();
+        input_path = "<stdin>";
+        assert(close_input == 0);
+    } else if (hasSuffix(input_path, ".bz2")) {
+        close_input = 2;
+        try stderr.writeAll("bzip2 not supported. sorry.\n");
+        return error.UnsupportedInputFormat;
+    } else if (hasSuffix(input_path, ".gz")) {
+        close_input = 2;
+        try stderr.writeAll("gz not supported. sorry.\n");
+        return error.UnsupportedInputFormat;
+    } else if (hasSuffix(input_path, ".xz")) {
+        close_input = 2;
+        try stderr.writeAll("xz not supported. sorry.\n");
+        return error.UnsupportedInputFormat;
+    } else {
+        close_input = 1;
+        file = try std.fs.cwd().openFile(input_path, .{});
+        input_file = file.reader();
+    }
+    defer file.close();
+
+    try message("reading from '{s}'", .{input_path});
+
+    var ch = try next();
+    while (ch == 'c') : (ch = try next()) {
+        while (ch != '\n') : (ch = try next()) {
+            if (ch == 0) {
+                try stderr.writeAll("unexpected end-of-file in comment\n");
+                return error.ParseError;
+            }
+        }
+    }
+
+    if (ch != 'p') {
+        try stderr.writer().print("expected comment or header, got {c} ({d})\n", .{ ch, ch });
+        return error.ParseError;
+    }
+    const header = " cnf ";
+    var p: []const u8 = header[0..];
+    while (p.len > 0) {
+        const c = p[0];
+        p = p[1..];
+        if (c != try next()) {
+            try stderr.writeAll("invalid header\n");
+            return error.ParseError;
+        }
+    }
+    ch = try next();
+    if (!std.ascii.isDigit(ch)) {
+        try stderr.writeAll("expected digit\n");
+        return error.ParseError;
+    }
+    variables = ch - '0';
+    ch = try next();
+    while (std.ascii.isDigit(ch)) : (ch = try next()) {
+        if (std.math.maxInt(i64) / 10 < variables) {
+            try stderr.writeAll("too many variables specified in header");
+            return error.ParseError;
+        }
+        variables *= 10;
+        const digit: i64 = (ch - '0');
+        if (std.math.maxInt(i64) - digit < variables) {
+            try stderr.writeAll("too many variables specified in header");
+            return error.ParseError;
+        }
+        variables += digit;
+    }
+    if (ch != ' ') {
+        try stderr.writeAll("extected white space");
+        return error.ParseError;
+    }
+    ch = try next();
+    if (!std.ascii.isDigit(ch)) {
+        try stderr.writeAll("extected digit");
+        return error.ParseError;
+    }
+    var expected: i64 = ch - '0';
+    ch = try next();
+    while (std.ascii.isDigit(ch)) : (ch = try next()) {
+        if (std.math.maxInt(i64) / 10 < expected) {
+            try stderr.writeAll("too many clauses specified in header");
+            return error.ParseError;
+        }
+        expected *= 10;
+        const digit: i64 = (ch - '0');
+        if (std.math.maxInt(i64) - digit < expected) {
+            try stderr.writeAll("too many clauses specified in header");
+            return error.ParseError;
+        }
+        expected += digit;
+    }
+    if (ch != '\n') {
+        try stderr.writeAll("expected new-line");
+        return error.ParseError;
+    }
+    try message("found 'p cnf {d} {d}' header", .{ variables, expected });
+    try initializeVariables();
+
+    _ = start; // TODO: remove this
+}
+
+fn initializeVariables() !void {
+    occurrences = try ArrayWithOffset(*clause).init(2 * variables + 1, variables);
+    marks = try ArrayWithOffset(bool).init(2 * variables + 1, variables);
+    values = try ArrayWithOffset(i2).init(2 * variables + 1, variables);
+    forced = try ArrayWithOffset(bool).init(variables + 1, 0);
+}
+
+pub fn main() !u8 {
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
     options(args) catch |err| switch (err) {
@@ -332,6 +490,22 @@ pub fn main() !u8 {
     };
     try banner();
     init();
+    try parse();
+    // var hi: ArrayWithOffset(u8) = undefined;
+    // hi = try ArrayWithOffset(u8).init(11, 5);
+    // // var hi = try ArrayWithOffset(u8).init(11, 5);
+    // try hi.set(4, 1);
+    // try hi.set(5, 2);
+    // const num1 = try hi.get(4);
+    // const num2 = try hi.get(5);
+    // try stdout.writer().print("num1: {d}\n", .{num1});
+    // try stdout.writer().print("num1: {d}\n", .{num2});
+    // defer {
+    //     occurrences.deinit();
+    //     marks.deinit();
+    //     values.deinit();
+    //     forced.deinit();
+    // }
 
     return 0;
 }
