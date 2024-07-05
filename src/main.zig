@@ -5,6 +5,7 @@ const stderr = std.io.getStdErr();
 const stdin = std.io.getStdIn();
 const ArrayList = std.ArrayList;
 const assert = std.debug.assert;
+const debug = @import("config").debug;
 
 var gpa = std.heap.GeneralPurposeAllocator(.{}){};
 const allocator = gpa.allocator();
@@ -56,35 +57,47 @@ pub fn ArrayWithOffset(comptime T: type) type {
     return struct {
         comptime T: type = u64,
         size: u64,
-        offset: u64,
+        offset: i64,
         data: []T,
         const Self = @This();
-        fn init(size: u64, offset: u64) !Self {
+        fn init(size: u64, offset: i64) !Self {
             const data = try allocator.alloc(T, size);
             return Self{ .data = data, .size = size, .offset = offset };
         }
-        fn get(self: *Self, idx: u64) !T {
-            assert(idx + self.offset < self.data.len);
-            return self.data[idx + self.offset];
+        fn fill(self: *Self, it: anytype) void {
+            for (self.data) |*item| {
+                item.* = it;
+            }
         }
-        fn set(self: *Self, idx: u64, it: T) !void {
+        fn get(self: *Self, idx: i64) T {
             assert(idx + self.offset < self.data.len);
-            self.data[idx + self.offset] = it;
+            const new_idx = idx + self.offset;
+            assert(new_idx >= 0);
+            return self.data[@as(usize, @intCast(new_idx))];
+        }
+        fn set(self: *Self, idx: i64, it: T) void {
+            assert(idx + self.offset < self.data.len);
+            const new_idx = idx + self.offset;
+            assert(new_idx >= 0);
+            self.data[@as(usize, @intCast(new_idx))] = it;
+        }
+        fn deinit(self: *Self) void {
+            allocator.free(self.data);
         }
     };
 }
 
 // Part of the state needed for parsing and unit propagation
-var simplified = ArrayList(i32);
-var unsimplified = ArrayList(i32);
-var trail = ArrayList(i32);
-var propagated = ArrayList(u32);
+var simplified = ArrayList(i64).init(allocator);
+var unsimplified = ArrayList(i64).init(allocator);
+var trail = ArrayList(i64).init(allocator);
+var propagated = ArrayList(u64).init(allocator);
 var values: ArrayWithOffset(i2) = undefined;
 var marks: ArrayWithOffset(bool) = undefined;
 var forced: ArrayWithOffset(bool) = undefined;
 
 // The state of the local search solver
-var unsatisfied = ArrayList(*clause);
+var unsatisfied = ArrayList(*clause).init(allocator);
 var limit = invalid_limit;
 var generator: u64 = 0;
 var minimum = invalid_minimum;
@@ -142,7 +155,22 @@ var stats = struct {
     made_clauses: u64,
     broken_clauses: u64,
     random_walk: u64,
+}{
+    .added = 0,
+    .parsed = 0,
+    .flipped = 0,
+    .restarts = 0,
+    .make_visited = 0,
+    .break_visited = 0,
+    .made_clauses = 0,
+    .broken_clauses = 0,
+    .random_walk = 0,
 };
+
+// For debugging mode
+var start_of_clause_lineno: u64 = 0;
+var original_literals = ArrayList(i64).init(allocator);
+var original_lineno = ArrayList(u64).init(allocator);
 
 const clause = struct {
     id: u32,
@@ -236,6 +264,13 @@ fn options(args: [][:0]u8) !void {
             _ = std.c.alarm(seconds);
             timeout_string = arg;
             timeout_string_seen = true;
+        } else if (std.mem.eql(u8, arg, "-l")) {
+            if (debug) {
+                verbosity = std.math.maxInt(i32);
+            } else {
+                try stderr.writeAll("invalid option '-l' (compiled without logging support)\n");
+                return error.OptionsError;
+            }
         } else if (std.mem.eql(u8, arg, "-n")) {
             do_not_print_model = true;
         } else if (std.mem.eql(u8, arg, "--random")) {
@@ -368,6 +403,13 @@ fn next() !u8 {
     return ch;
 }
 
+fn expectDigit(ch: u8) !void {
+    if (!std.ascii.isDigit(ch)) {
+        try stderr.writeAll("extected digit");
+        return error.ParseError;
+    }
+}
+
 fn parse() !void {
     const start = std.time.timestamp();
 
@@ -421,10 +463,7 @@ fn parse() !void {
         }
     }
     ch = try next();
-    if (!std.ascii.isDigit(ch)) {
-        try stderr.writeAll("expected digit\n");
-        return error.ParseError;
-    }
+    try expectDigit(ch);
     variables = ch - '0';
     ch = try next();
     while (std.ascii.isDigit(ch)) : (ch = try next()) {
@@ -445,10 +484,7 @@ fn parse() !void {
         return error.ParseError;
     }
     ch = try next();
-    if (!std.ascii.isDigit(ch)) {
-        try stderr.writeAll("extected digit");
-        return error.ParseError;
-    }
+    try expectDigit(ch);
     var expected: i64 = ch - '0';
     ch = try next();
     while (std.ascii.isDigit(ch)) : (ch = try next()) {
@@ -470,15 +506,140 @@ fn parse() !void {
     }
     try message("found 'p cnf {d} {d}' header", .{ variables, expected });
     try initializeVariables();
+    var lit: i64 = 0;
+    if (debug) {
+        start_of_clause_lineno = 0;
+    }
+    while (true) {
+        ch = try next();
+        if (ch == ' ' or ch == '\n') continue;
+        if (ch == 0) break;
+        var sign: i2 = 1;
+        if (ch == '-') {
+            ch = try next();
+            sign = -1;
+        }
+        try expectDigit(ch);
+        if (debug) {
+            start_of_clause_lineno = lineno;
+        }
+        if (stats.parsed == expected) {
+            try stderr.writeAll("specified clauses exceeded\n");
+            return error.ParseError;
+        }
+        lit = ch - '0';
+        ch = try next();
+        while (std.ascii.isDigit(ch)) : (ch = try next()) {
+            if (std.math.maxInt(i64) / 10 < lit) {
+                try stderr.writeAll("literal too large\n");
+                return error.ParseError;
+            }
+            lit *= 10;
+            const digit = ch - '0';
+            if (std.math.maxInt(i64) - @as(i64, @intCast(digit)) < lit) {
+                try stderr.writeAll("literal too large\n");
+                return error.ParseError;
+            }
+            lit += digit;
+        }
+        if (ch != ' ' and ch != '\n') {
+            try stderr.writeAll("expected white-space\n");
+            return error.ParseError;
+        }
+        if (lit > variables) {
+            try stderr.writer().print("invalid variable {d}\n", .{lit});
+            return error.ParseError;
+        }
+        lit *= sign;
+        if (debug) {
+            try original_literals.append(lit);
+        }
+        if (lit != 0) {
+            try unsimplified.append(lit);
+        } else {
+            stats.parsed += 1;
+            try logClause(&unsimplified, "parsed");
+            if (!found_empty_clause and !tautologicalClause(&unsimplified)) {
+                const simpl = try simplifyClause(&simplified, &unsimplified);
+                if (simpl) {
+                    try logClause(&simplified, "simplified");
+                }
+                // TODO: add clause
+            }
+            try unsimplified.resize(0);
+            if (debug) {
+                try original_lineno.append(start_of_clause_lineno);
+            }
+        }
+    }
+    if (lit != 0) {
+        try stdout.writeAll("zero missing\n");
+        return error.ParseError;
+    }
+    if (stats.parsed != expected) {
+        try stdout.writeAll("clause missing\n");
+        return error.ParseError;
+    }
 
-    _ = start; // TODO: remove this
+    try message("parsed {d} clauses in {d:.2} seconds", .{ stats.parsed, std.time.timestamp() - start });
+}
+
+fn logClause(cls: *ArrayList(i64), msg: anytype) !void {
+    if (debug) {
+        if (verbosity == std.math.maxInt(i32)) {
+            try stdout.writer().print("c LOG {s} ", .{msg});
+            for (cls.items) |lit| {
+                try stdout.writer().print("{d} ", .{lit});
+            }
+            try stdout.writeAll("\n");
+        }
+    }
+}
+
+fn simplifyClause(dst: *ArrayList(i64), src: *ArrayList(i64)) !bool {
+    try dst.resize(0);
+    for (src.items) |lit| {
+        if (marks.get(lit) == true) continue;
+        if (values.get(lit) < 0) continue;
+        assert(marks.get(-lit) == false);
+        marks.set(lit, true);
+        try dst.append(lit);
+    }
+    for (dst.items) |lit| {
+        marks.set(lit, false);
+    }
+    return dst.items.len != src.items.len;
+}
+
+fn tautologicalClause(cls: *ArrayList(i64)) bool {
+    var res = false;
+    for (cls.items) |lit| {
+        if (marks.get(lit) == true) continue;
+        if (values.get(lit) > 0) {
+            res = true;
+            break;
+        }
+        if (marks.get(-lit) == true) {
+            res = true;
+            break;
+        }
+        marks.set(lit, true);
+    }
+    for (cls.items) |lit| {
+        marks.set(lit, false);
+    }
+    return res;
 }
 
 fn initializeVariables() !void {
-    occurrences = try ArrayWithOffset(*clause).init(2 * variables + 1, variables);
-    marks = try ArrayWithOffset(bool).init(2 * variables + 1, variables);
-    values = try ArrayWithOffset(i2).init(2 * variables + 1, variables);
-    forced = try ArrayWithOffset(bool).init(variables + 1, 0);
+    const v = @as(u64, @intCast(variables));
+    occurrences = try ArrayWithOffset(*clause).init(2 * v + 1, variables);
+    marks = try ArrayWithOffset(bool).init(2 * v + 1, variables);
+    marks.fill(false);
+    values = try ArrayWithOffset(i2).init(2 * v + 1, variables);
+    values.fill(0);
+    forced = try ArrayWithOffset(bool).init(v + 1, 0);
+    forced.fill(false);
 }
 
 pub fn main() !u8 {
@@ -491,21 +652,17 @@ pub fn main() !u8 {
     try banner();
     init();
     try parse();
-    // var hi: ArrayWithOffset(u8) = undefined;
-    // hi = try ArrayWithOffset(u8).init(11, 5);
-    // // var hi = try ArrayWithOffset(u8).init(11, 5);
-    // try hi.set(4, 1);
-    // try hi.set(5, 2);
-    // const num1 = try hi.get(4);
-    // const num2 = try hi.get(5);
-    // try stdout.writer().print("num1: {d}\n", .{num1});
-    // try stdout.writer().print("num1: {d}\n", .{num2});
-    // defer {
-    //     occurrences.deinit();
-    //     marks.deinit();
-    //     values.deinit();
-    //     forced.deinit();
-    // }
-
+    defer {
+        occurrences.deinit();
+        marks.deinit();
+        values.deinit();
+        forced.deinit();
+        simplified.deinit();
+        unsimplified.deinit();
+        if (debug) {
+            original_literals.deinit();
+            original_lineno.deinit();
+        }
+    }
     return 0;
 }
