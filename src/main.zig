@@ -42,6 +42,14 @@ const usage =
     \\'.xz' files.
 ;
 
+fn lit2Idx(lit: i64) usize {
+    if (lit < 0) {
+        return @as(usize, @intCast(-lit * 2 - 2));
+    } else {
+        return @as(usize, @intCast(lit * 2 - 1));
+    }
+}
+
 const invalid_position = ~@as(u32, 0);
 const invalid_minimum = ~@as(u32, 0);
 const invalid_break_value = ~@as(u32, 0);
@@ -51,50 +59,16 @@ const invalid_limit = ~@as(u64, 0);
 var variables: i64 = 0;
 var found_empty_clause: bool = false;
 var clauses = ArrayList(*clause).init(allocator);
-var occurrences: ArrayWithOffset(*clause) = undefined;
-
-pub fn ArrayWithOffset(comptime T: type) type {
-    return struct {
-        comptime T: type = u64,
-        size: u64,
-        offset: i64,
-        data: []T,
-        const Self = @This();
-        fn init(size: u64, offset: i64) !Self {
-            const data = try allocator.alloc(T, size);
-            return Self{ .data = data, .size = size, .offset = offset };
-        }
-        fn fill(self: *Self, it: anytype) void {
-            for (self.data) |*item| {
-                item.* = it;
-            }
-        }
-        fn get(self: *Self, idx: i64) T {
-            assert(idx + self.offset < self.data.len);
-            const new_idx = idx + self.offset;
-            assert(new_idx >= 0);
-            return self.data[@as(usize, @intCast(new_idx))];
-        }
-        fn set(self: *Self, idx: i64, it: T) void {
-            assert(idx + self.offset < self.data.len);
-            const new_idx = idx + self.offset;
-            assert(new_idx >= 0);
-            self.data[@as(usize, @intCast(new_idx))] = it;
-        }
-        fn deinit(self: *Self) void {
-            allocator.free(self.data);
-        }
-    };
-}
+var occurrences: []ArrayList(*clause) = undefined;
 
 // Part of the state needed for parsing and unit propagation
 var simplified = ArrayList(i64).init(allocator);
 var unsimplified = ArrayList(i64).init(allocator);
 var trail = ArrayList(i64).init(allocator);
 var propagated = ArrayList(u64).init(allocator);
-var values: ArrayWithOffset(i2) = undefined;
-var marks: ArrayWithOffset(bool) = undefined;
-var forced: ArrayWithOffset(bool) = undefined;
+var values: []i2 = undefined;
+var marks: []bool = undefined;
+var forced: []bool = undefined;
 
 // The state of the local search solver
 var unsatisfied = ArrayList(*clause).init(allocator);
@@ -586,13 +560,13 @@ fn parse() !void {
 
 fn checkSimplified(cls: *ArrayList(i64)) void {
     for (cls.items) |lit| {
-        assert(values.get(lit) == 0);
-        assert(marks.get(lit) == false);
-        assert(marks.get(-lit) == false);
-        marks.set(lit, true);
+        assert(values[lit2Idx(lit)] == 0);
+        assert(marks[lit2Idx(lit)] == false);
+        assert(marks[lit2Idx(-lit)] == false);
+        marks[lit2Idx(lit)] = true;
     }
     for (cls.items) |lit| {
-        marks.set(lit, true);
+        marks[lit2Idx(lit)] = false;
     }
 }
 
@@ -637,14 +611,14 @@ fn logClause(cls: *ArrayList(i64), msg: anytype) !void {
 fn simplifyClause(dst: *ArrayList(i64), src: *ArrayList(i64)) !bool {
     try dst.resize(0);
     for (src.items) |lit| {
-        if (marks.get(lit) == true) continue;
-        if (values.get(lit) < 0) continue;
-        assert(marks.get(-lit) == false);
-        marks.set(lit, true);
+        if (marks[lit2Idx(lit)] == true) continue;
+        if (values[lit2Idx(lit)] < 0) continue;
+        assert(marks[lit2Idx(-lit)] == false);
+        marks[lit2Idx(lit)] = true;
         try dst.append(lit);
     }
     for (dst.items) |lit| {
-        marks.set(lit, false);
+        marks[lit2Idx(lit)] = false;
     }
     return dst.items.len != src.items.len;
 }
@@ -652,32 +626,38 @@ fn simplifyClause(dst: *ArrayList(i64), src: *ArrayList(i64)) !bool {
 fn tautologicalClause(cls: *ArrayList(i64)) bool {
     var res = false;
     for (cls.items) |lit| {
-        if (marks.get(lit) == true) continue;
-        if (values.get(lit) > 0) {
+        if (marks[lit2Idx(lit)] == true) continue;
+        if (values[lit2Idx(lit)] > 0) {
             res = true;
             break;
         }
-        if (marks.get(-lit) == true) {
+        if (marks[lit2Idx(-lit)] == true) {
             res = true;
             break;
         }
-        marks.set(lit, true);
+        marks[lit2Idx(lit)] = true;
     }
     for (cls.items) |lit| {
-        marks.set(lit, false);
+        marks[lit2Idx(lit)] = false;
     }
     return res;
 }
 
+fn fill(comptime T: type, arr: []T, elem: T) void {
+    for (arr) |*item| {
+        item.* = elem;
+    }
+}
+
 fn initializeVariables() !void {
-    const v = @as(u64, @intCast(variables));
-    occurrences = try ArrayWithOffset(*clause).init(2 * v + 1, variables);
-    marks = try ArrayWithOffset(bool).init(2 * v + 1, variables);
-    marks.fill(false);
-    values = try ArrayWithOffset(i2).init(2 * v + 1, variables);
-    values.fill(0);
-    forced = try ArrayWithOffset(bool).init(v + 1, 0);
-    forced.fill(false);
+    const v = @as(usize, @intCast(variables));
+    occurrences = try allocator.alloc(ArrayList(*clause), 2 * v + 1);
+    marks = try allocator.alloc(bool, 2 * v + 1);
+    fill(bool, marks, false);
+    values = try allocator.alloc(i2, 2 * v + 1);
+    fill(i2, values, 0);
+    forced = try allocator.alloc(bool, v + 1);
+    fill(bool, forced, false);
 }
 
 pub fn main() !u8 {
@@ -692,10 +672,10 @@ pub fn main() !u8 {
     try parse();
     defer {
         clauses.deinit();
-        occurrences.deinit();
-        marks.deinit();
-        values.deinit();
-        forced.deinit();
+        allocator.free(occurrences);
+        allocator.free(marks);
+        allocator.free(values);
+        allocator.free(forced);
         simplified.deinit();
         unsimplified.deinit();
         if (debug) {
