@@ -50,7 +50,7 @@ const invalid_limit = ~@as(u64, 0);
 // Global state of the preprocessor
 var variables: i64 = 0;
 var found_empty_clause: bool = false;
-var clauses: ArrayWithOffset(*clause) = undefined;
+var clauses = ArrayList(*clause).init(allocator);
 var occurrences: ArrayWithOffset(*clause) = undefined;
 
 pub fn ArrayWithOffset(comptime T: type) type {
@@ -173,9 +173,9 @@ var original_literals = ArrayList(i64).init(allocator);
 var original_lineno = ArrayList(u64).init(allocator);
 
 const clause = struct {
-    id: u32,
-    pos: u32,
-    literals: ArrayList(i32),
+    id: u64,
+    pos: u64,
+    literals: ArrayList(i64),
     fn print(self: *clause) !void {
         for (self.literals.items) |lit| try stdout.writer().print("{d} ", .{lit});
         try stdout.writeAll("0\n");
@@ -584,6 +584,44 @@ fn parse() !void {
     try message("parsed {d} clauses in {d:.2} seconds", .{ stats.parsed, std.time.timestamp() - start });
 }
 
+fn checkSimplified(cls: *ArrayList(i64)) void {
+    for (cls.items) |lit| {
+        assert(values.get(lit) == 0);
+        assert(marks.get(lit) == false);
+        assert(marks.get(-lit) == false);
+        marks.set(lit, true);
+    }
+    for (cls.items) |lit| {
+        marks.set(lit, true);
+    }
+}
+
+fn connectLiteral(lit: i64, cls: *clause) void {
+    assert(cls.literals.items.len > 1);
+    logClause(cls, "connectLiteral"); // TODO: also print literal
+    _ = lit; // TODO:
+}
+
+fn connectClause(cls: *clause) void {
+    assert(cls.literals.items.len > 1);
+    for (cls.literals.items) |lit| {
+        connectLiteral(lit, cls);
+    }
+}
+
+fn newClause(literals: *ArrayList(i64)) *clause {
+    if (debug) {
+        checkSimplified(literals);
+    }
+    const lits = try literals.clone(); // TODO: fix memory leak
+    const cls = clause{ .id = stats.added, .pos = invalid_position, .literals = lits };
+    stats.added += 1;
+    logClause(lits, "new");
+    if (lits.items.len > 1) {
+        clauses.append(&cls);
+    }
+}
+
 fn logClause(cls: *ArrayList(i64), msg: anytype) !void {
     if (debug) {
         if (verbosity == std.math.maxInt(i32)) {
@@ -653,6 +691,7 @@ pub fn main() !u8 {
     init();
     try parse();
     defer {
+        clauses.deinit();
         occurrences.deinit();
         marks.deinit();
         values.deinit();
