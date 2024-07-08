@@ -65,7 +65,7 @@ var occurrences: []ArrayList(*clause) = undefined;
 var simplified = ArrayList(i64).init(allocator);
 var unsimplified = ArrayList(i64).init(allocator);
 var trail = ArrayList(i64).init(allocator);
-var propagated = ArrayList(u64).init(allocator);
+var propagated: u64 = 0;
 var values: []i2 = undefined;
 var marks: []bool = undefined;
 var forced: []bool = undefined;
@@ -105,7 +105,7 @@ const algorithm_type = enum {
 var algorithm = algorithm_type.walksat_algorithm;
 
 // Parsing state
-var close_input: u2 = 0; // 0=stdin, 1=file, 2=pipe
+var close_input: u2 = 0; // 0=stdin, 1=file, 2=pipe TODO: remove, but check
 var input_path: []const u8 = undefined;
 var input_path_seen = false;
 var file: std.fs.File = undefined;
@@ -312,6 +312,13 @@ fn options(args: [][:0]u8) !void {
 
 fn message(comptime fmt: []const u8, args: anytype) !void {
     if (verbosity < 0)
+        return;
+    try stdout.writer().print(fmt, args);
+    try stdout.writeAll("\n");
+}
+
+fn verbose(trigger_at_v: i32, comptime fmt: []const u8, args: anytype) !void {
+    if (trigger_at_v <= verbosity)
         return;
     try stdout.writer().print(fmt, args);
     try stdout.writeAll("\n");
@@ -534,11 +541,26 @@ fn parse() !void {
             stats.parsed += 1;
             try logClause(&unsimplified, "parsed");
             if (!found_empty_clause and !tautologicalClause(&unsimplified)) {
-                const simpl = try simplifyClause(&simplified, &unsimplified);
-                if (simpl) {
+                const did_simplify = try simplifyClause(&simplified, &unsimplified);
+                if (did_simplify) {
                     try logClause(&simplified, "simplified");
                 }
-                // TODO: add clause
+                const c = try newClause(&simplified);
+                const size = c.literals.items.len;
+                if (size == 0) {
+                    assert(!found_empty_clause);
+                    try verbose(1, "found_empty_clause", .{});
+                    found_empty_clause = true;
+                } else if (size == 1) {
+                    const unit = c.literals.items[0];
+                    try logClause(&c.literals, "found unit");
+                    try rootLevelAssign(unit, c);
+                    const ok = try propagate();
+                    if (!ok) {
+                        try verbose(1, "root-level propagation yields conflict", .{});
+                        assert(found_empty_clause);
+                    }
+                }
             }
             try unsimplified.resize(0);
             if (debug) {
@@ -558,6 +580,42 @@ fn parse() !void {
     try message("parsed {d} clauses in {d:.2} seconds", .{ stats.parsed, std.time.timestamp() - start });
 }
 
+fn propagate() !bool {
+    assert(!found_empty_clause);
+    while (propagated != trail.items.len) : (propagated += 1) {
+        const lit = trail.items[propagated];
+        try log("propagating {d}", .{lit});
+        next_clause: for (occurrences[lit2Idx(-lit)].items) |c| {
+            var unit: i64 = 0;
+            for (c.literals.items) |other| {
+                const value = values[lit2Idx(other)];
+                if (value < 0) continue;
+                if (value > 0) continue :next_clause;
+                if (unit != 0) continue :next_clause;
+                unit = other;
+            }
+            if (unit == 0) {
+                try logClause(&c.literals, "conflicting");
+                found_empty_clause = true;
+                return false;
+            }
+            try rootLevelAssign(unit, c);
+        }
+    }
+    return true;
+}
+
+fn rootLevelAssign(lit: i64, reason: *clause) !void {
+    // assert(reason != null); // TODO: this does not work
+    try logClause(&reason.literals, "assign %d reason"); // TODO: also print literal
+    assert(values[lit2Idx(lit)] == 0);
+    assert(values[lit2Idx(-lit)] == 0);
+    values[lit2Idx(lit)] = 1;
+    values[lit2Idx(-lit)] = -1;
+    try trail.append(lit);
+    forced[@abs(lit)] = true;
+}
+
 fn checkSimplified(cls: *ArrayList(i64)) void {
     for (cls.items) |lit| {
         assert(values[lit2Idx(lit)] == 0);
@@ -572,8 +630,8 @@ fn checkSimplified(cls: *ArrayList(i64)) void {
 
 fn connectLiteral(lit: i64, cls: *clause) void {
     assert(cls.literals.items.len > 1);
-    logClause(cls, "connectLiteral"); // TODO: also print literal
-    _ = lit; // TODO:
+    try logClause(cls, "connectLiteral"); // TODO: also print literal
+    occurrences[lit2Idx(lit)].append(cls);
 }
 
 fn connectClause(cls: *clause) void {
@@ -583,17 +641,18 @@ fn connectClause(cls: *clause) void {
     }
 }
 
-fn newClause(literals: *ArrayList(i64)) *clause {
+fn newClause(literals: *ArrayList(i64)) !*clause {
     if (debug) {
         checkSimplified(literals);
     }
-    const lits = try literals.clone(); // TODO: fix memory leak
-    const cls = clause{ .id = stats.added, .pos = invalid_position, .literals = lits };
+    var lits = try literals.clone(); // TODO: fix memory leak
+    var cls = clause{ .id = stats.added, .pos = invalid_position, .literals = lits };
     stats.added += 1;
-    logClause(lits, "new");
+    try logClause(&lits, "new");
     if (lits.items.len > 1) {
-        clauses.append(&cls);
+        try clauses.append(&cls);
     }
+    return &cls;
 }
 
 fn logClause(cls: *ArrayList(i64), msg: anytype) !void {
@@ -603,6 +662,16 @@ fn logClause(cls: *ArrayList(i64), msg: anytype) !void {
             for (cls.items) |lit| {
                 try stdout.writer().print("{d} ", .{lit});
             }
+            try stdout.writeAll("\n");
+        }
+    }
+}
+
+fn log(comptime fmt: []const u8, args: anytype) !void {
+    if (debug) {
+        if (verbosity == std.math.maxInt(i32)) {
+            try stdout.writeAll("c LOG ");
+            try stdout.writer().print(fmt, args);
             try stdout.writeAll("\n");
         }
     }
