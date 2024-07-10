@@ -7,8 +7,9 @@ const ArrayList = std.ArrayList;
 const assert = std.debug.assert;
 const debug = @import("config").debug;
 
-var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-const allocator = gpa.allocator();
+// var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+// const allocator = gpa.allocator();
+const allocator = std.heap.c_allocator;
 
 const usage =
     \\usage: babywalk [ -h ] [ <input> ]
@@ -58,7 +59,7 @@ const invalid_limit = ~@as(u64, 0);
 // Global state of the preprocessor
 var variables: i64 = 0;
 var found_empty_clause: bool = false;
-var clauses = ArrayList(*clause).init(allocator);
+var clauses = ArrayList(clause).init(allocator);
 var occurrences: []ArrayList(*clause) = undefined;
 
 // Part of the state needed for parsing and unit propagation
@@ -143,15 +144,16 @@ var stats = struct {
 
 // For debugging mode
 var start_of_clause_lineno: u64 = 0;
+// TODO: only initialize them when in debugging is on
 var original_literals = ArrayList(i64).init(allocator);
 var original_lineno = ArrayList(u64).init(allocator);
 
 const clause = struct {
     id: u64,
     pos: u64,
-    literals: ArrayList(i64),
+    literals: []i64,
     fn print(self: *clause) !void {
-        for (self.literals.items) |lit| try stdout.writer().print("{d} ", .{lit});
+        for (self.literals) |lit| try stdout.writer().print("{d} ", .{lit});
         try stdout.writeAll("0\n");
     }
 };
@@ -539,30 +541,34 @@ fn parse() !void {
             try unsimplified.append(lit);
         } else {
             stats.parsed += 1;
-            try logClause(&unsimplified, "parsed");
+            try logClause(&unsimplified.items, "parsed");
             if (!found_empty_clause and !tautologicalClause(&unsimplified)) {
                 const did_simplify = try simplifyClause(&simplified, &unsimplified);
                 if (did_simplify) {
-                    try logClause(&simplified, "simplified");
+                    try logClause(&simplified.items, "simplified");
                 }
                 const c = try newClause(&simplified);
-                const size = c.literals.items.len;
+                if (c.literals.len > 1) {
+                    try clauses.append(c);
+                }
+                const size = c.literals.len;
                 if (size == 0) {
                     assert(!found_empty_clause);
                     try verbose(1, "found_empty_clause", .{});
                     found_empty_clause = true;
                 } else if (size == 1) {
-                    const unit = c.literals.items[0];
+                    const unit = c.literals[0];
                     try logClause(&c.literals, "found unit");
-                    try rootLevelAssign(unit, c);
+                    try rootLevelAssign(unit, &c);
                     const ok = try propagate();
                     if (!ok) {
                         try verbose(1, "root-level propagation yields conflict", .{});
                         assert(found_empty_clause);
                     }
+                    allocator.free(c.literals);
                 }
             }
-            try unsimplified.resize(0);
+            unsimplified.shrinkRetainingCapacity(0);
             if (debug) {
                 try original_lineno.append(start_of_clause_lineno);
             }
@@ -587,7 +593,7 @@ fn propagate() !bool {
         try log("propagating {d}", .{lit});
         next_clause: for (occurrences[lit2Idx(-lit)].items) |c| {
             var unit: i64 = 0;
-            for (c.literals.items) |other| {
+            for (c.literals) |other| {
                 const value = values[lit2Idx(other)];
                 if (value < 0) continue;
                 if (value > 0) continue :next_clause;
@@ -605,8 +611,7 @@ fn propagate() !bool {
     return true;
 }
 
-fn rootLevelAssign(lit: i64, reason: *clause) !void {
-    // assert(reason != null); // TODO: this does not work
+fn rootLevelAssign(lit: i64, reason: *const clause) !void {
     try logClause(&reason.literals, "assign %d reason"); // TODO: also print literal
     assert(values[lit2Idx(lit)] == 0);
     assert(values[lit2Idx(-lit)] == 0);
@@ -630,7 +635,7 @@ fn checkSimplified(cls: *ArrayList(i64)) void {
 
 fn connectLiteral(lit: i64, cls: *clause) void {
     assert(cls.literals.items.len > 1);
-    try logClause(cls, "connectLiteral"); // TODO: also print literal
+    try logClause(&cls.literals, "connectLiteral"); // TODO: also print literal
     occurrences[lit2Idx(lit)].append(cls);
 }
 
@@ -641,25 +646,24 @@ fn connectClause(cls: *clause) void {
     }
 }
 
-fn newClause(literals: *ArrayList(i64)) !*clause {
+fn newClause(literals: *ArrayList(i64)) !clause {
     if (debug) {
         checkSimplified(literals);
     }
-    var lits = try literals.clone(); // TODO: fix memory leak
-    var cls = clause{ .id = stats.added, .pos = invalid_position, .literals = lits };
-    stats.added += 1;
-    try logClause(&lits, "new");
-    if (lits.items.len > 1) {
-        try clauses.append(&cls);
+    var lits = try allocator.alloc(i64, literals.items.len);
+    for (literals.items, 0..) |lit, idx| {
+        lits[idx] = lit;
     }
-    return &cls;
+    try logClause(&lits, "new");
+    stats.added += 1;
+    return clause{ .id = stats.added, .pos = invalid_position, .literals = lits };
 }
 
-fn logClause(cls: *ArrayList(i64), msg: anytype) !void {
+fn logClause(cls: *const []i64, msg: anytype) !void {
     if (debug) {
         if (verbosity == std.math.maxInt(i32)) {
             try stdout.writer().print("c LOG {s} ", .{msg});
-            for (cls.items) |lit| {
+            for (cls.*) |lit| {
                 try stdout.writer().print("{d} ", .{lit});
             }
             try stdout.writeAll("\n");
@@ -678,7 +682,7 @@ fn log(comptime fmt: []const u8, args: anytype) !void {
 }
 
 fn simplifyClause(dst: *ArrayList(i64), src: *ArrayList(i64)) !bool {
-    try dst.resize(0);
+    dst.shrinkRetainingCapacity(0);
     for (src.items) |lit| {
         if (marks[lit2Idx(lit)] == true) continue;
         if (values[lit2Idx(lit)] < 0) continue;
@@ -740,6 +744,9 @@ pub fn main() !u8 {
     init();
     try parse();
     defer {
+        for (clauses.items) |c| {
+            allocator.free(c.literals);
+        }
         clauses.deinit();
         allocator.free(occurrences);
         allocator.free(marks);
@@ -747,10 +754,8 @@ pub fn main() !u8 {
         allocator.free(forced);
         simplified.deinit();
         unsimplified.deinit();
-        if (debug) {
-            original_literals.deinit();
-            original_lineno.deinit();
-        }
+        original_literals.deinit();
+        original_lineno.deinit();
     }
     return 0;
 }
