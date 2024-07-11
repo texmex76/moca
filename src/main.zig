@@ -400,13 +400,13 @@ fn parse() !void {
         input_path = "<stdin>";
     } else if (hasSuffix(input_path, ".bz2")) {
         try stderr.writeAll("bzip2 not supported. sorry.\n");
-        return error.UnsupportedInputFormat;
+        return error.UnsupportedInputFormat; // TODO: support bzip2
     } else if (hasSuffix(input_path, ".gz")) {
         try stderr.writeAll("gz not supported. sorry.\n");
-        return error.UnsupportedInputFormat;
+        return error.UnsupportedInputFormat; // TODO: support gz
     } else if (hasSuffix(input_path, ".xz")) {
         try stderr.writeAll("xz not supported. sorry.\n");
-        return error.UnsupportedInputFormat;
+        return error.UnsupportedInputFormat; // TODO: support xz
     } else {
         file = try std.fs.cwd().openFile(input_path, .{});
         input_file = file.reader();
@@ -541,9 +541,10 @@ fn parse() !void {
                 if (did_simplify) {
                     try logClause(&simplified.items, "simplified");
                 }
-                const c = try newClause(&simplified);
+                var c = try newClause(&simplified);
                 if (c.literals.len > 1) {
                     try clauses.append(c);
+                    try connectClause(&c);
                 }
                 const size = c.literals.len;
                 if (size == 0) {
@@ -627,16 +628,16 @@ fn checkSimplified(cls: *ArrayList(i64)) void {
     }
 }
 
-fn connectLiteral(lit: i64, cls: *clause) void {
-    assert(cls.literals.items.len > 1);
+fn connectLiteral(lit: i64, cls: *clause) !void {
+    assert(cls.literals.len > 1);
     try logClauseAndLit(&cls.literals, lit, "connectLiteral");
-    occurrences[lit2Idx(lit)].append(cls);
+    try occurrences[lit2Idx(lit)].append(cls);
 }
 
-fn connectClause(cls: *clause) void {
-    assert(cls.literals.items.len > 1);
-    for (cls.literals.items) |lit| {
-        connectLiteral(lit, cls);
+fn connectClause(cls: *clause) !void {
+    assert(cls.literals.len > 1);
+    for (cls.literals) |lit| {
+        try connectLiteral(lit, cls);
     }
 }
 
@@ -731,12 +732,22 @@ fn fill(comptime T: type, arr: []T, elem: T) void {
 fn initializeVariables() !void {
     const v = @as(usize, @intCast(variables));
     occurrences = try allocator.alloc(ArrayList(*clause), 2 * v + 1);
+    for (occurrences) |*occ| {
+        occ.* = ArrayList(*clause).init(allocator);
+    }
     marks = try allocator.alloc(bool, 2 * v + 1);
     fill(bool, marks, false);
     values = try allocator.alloc(i2, 2 * v + 1);
     fill(i2, values, 0);
     forced = try allocator.alloc(bool, v + 1);
     fill(bool, forced, false);
+}
+
+fn simplify() !void {
+    if (found_empty_clause) return;
+    for (occurrences) |*list| {
+        try list.resize(0);
+    }
 }
 
 pub fn main() !u8 {
@@ -754,6 +765,9 @@ pub fn main() !u8 {
             allocator.free(c.literals);
         }
         clauses.deinit();
+        for (occurrences) |*occ| {
+            occ.deinit();
+        }
         allocator.free(occurrences);
         allocator.free(marks);
         allocator.free(values);
@@ -763,5 +777,6 @@ pub fn main() !u8 {
         original_literals.deinit();
         original_lineno.deinit();
     }
+    try simplify();
     return 0;
 }
