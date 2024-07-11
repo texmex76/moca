@@ -743,11 +743,48 @@ fn initializeVariables() !void {
     fill(bool, forced, false);
 }
 
+fn deleteClause(cls: *clause) !void {
+    try logClause(&cls.literals, "delete");
+    allocator.free(cls);
+}
+
 fn simplify() !void {
     if (found_empty_clause) return;
     for (occurrences) |*list| {
         try list.resize(0);
     }
+    const begin: [*]clause = clauses.items.ptr;
+    const end: [*]clause = clauses.items.ptr + clauses.items.len - 1;
+    var j = begin;
+    var i = j;
+    continue_with_next_clause: while (i != end) {
+        var c = i;
+        i += 1;
+        j += 1;
+        try simplified.resize(0);
+        var new_size: usize = 0;
+        for (c[0].literals) |lit| {
+            const value = values[lit2Idx(lit)];
+            if (value > 0) {
+                j -= 1;
+                try deleteClause(&c[0]);
+                continue :continue_with_next_clause;
+            }
+            if (value == 0) try simplified.append(lit);
+        }
+        new_size = simplified.items.len;
+        assert(new_size > 1);
+        if (new_size < c[0].literals.len) {
+            try logClause(&c[0].literals, "unsimplified");
+            for (simplified.items, 0..) |lit, idx| {
+                c[0].literals[idx] = lit;
+            }
+            try allocator.realloc(c[0].literals.*, new_size);
+            try logClause(&c[0], "simplified");
+        }
+        try connectClause(&c[0]);
+    }
+    clauses.resize(@intFromPtr(j) - @intFromPtr(begin));
 }
 
 pub fn main() !u8 {
