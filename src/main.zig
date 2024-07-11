@@ -106,7 +106,6 @@ const algorithm_type = enum {
 var algorithm = algorithm_type.walksat_algorithm;
 
 // Parsing state
-var close_input: u2 = 0; // 0=stdin, 1=file, 2=pipe TODO: remove, but check
 var input_path: []const u8 = undefined;
 var input_path_seen = false;
 var file: std.fs.File = undefined;
@@ -399,21 +398,16 @@ fn parse() !void {
     if (!input_path_seen or std.mem.eql(u8, input_path, "-")) {
         input_file = stdin.reader();
         input_path = "<stdin>";
-        assert(close_input == 0);
     } else if (hasSuffix(input_path, ".bz2")) {
-        close_input = 2;
         try stderr.writeAll("bzip2 not supported. sorry.\n");
         return error.UnsupportedInputFormat;
     } else if (hasSuffix(input_path, ".gz")) {
-        close_input = 2;
         try stderr.writeAll("gz not supported. sorry.\n");
         return error.UnsupportedInputFormat;
     } else if (hasSuffix(input_path, ".xz")) {
-        close_input = 2;
         try stderr.writeAll("xz not supported. sorry.\n");
         return error.UnsupportedInputFormat;
     } else {
-        close_input = 1;
         file = try std.fs.cwd().openFile(input_path, .{});
         input_file = file.reader();
     }
@@ -612,7 +606,7 @@ fn propagate() !bool {
 }
 
 fn rootLevelAssign(lit: i64, reason: *const clause) !void {
-    try logClause(&reason.literals, "assign %d reason"); // TODO: also print literal
+    try logClauseAndLit(&reason.literals, lit, "assign with reason");
     assert(values[lit2Idx(lit)] == 0);
     assert(values[lit2Idx(-lit)] == 0);
     values[lit2Idx(lit)] = 1;
@@ -635,7 +629,7 @@ fn checkSimplified(cls: *ArrayList(i64)) void {
 
 fn connectLiteral(lit: i64, cls: *clause) void {
     assert(cls.literals.items.len > 1);
-    try logClause(&cls.literals, "connectLiteral"); // TODO: also print literal
+    try logClauseAndLit(&cls.literals, lit, "connectLiteral");
     occurrences[lit2Idx(lit)].append(cls);
 }
 
@@ -657,6 +651,18 @@ fn newClause(literals: *ArrayList(i64)) !clause {
     try logClause(&lits, "new");
     stats.added += 1;
     return clause{ .id = stats.added, .pos = invalid_position, .literals = lits };
+}
+
+fn logClauseAndLit(cls: *const []i64, lit: i64, msg: anytype) !void {
+    if (debug) {
+        if (verbosity == std.math.maxInt(i32)) {
+            try stdout.writer().print("c LOG {s} l: {d} c: ", .{ msg, lit });
+            for (cls.*) |l| {
+                try stdout.writer().print("{d} ", .{l});
+            }
+            try stdout.writeAll("\n");
+        }
+    }
 }
 
 fn logClause(cls: *const []i64, msg: anytype) !void {
