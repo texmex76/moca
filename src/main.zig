@@ -745,7 +745,7 @@ fn initializeVariables() !void {
 
 fn deleteClause(cls: *clause) !void {
     try logClause(&cls.literals, "delete");
-    allocator.free(cls);
+    allocator.free(cls.literals);
 }
 
 fn simplify() !void {
@@ -779,12 +779,12 @@ fn simplify() !void {
             for (simplified.items, 0..) |lit, idx| {
                 c[0].literals[idx] = lit;
             }
-            try allocator.realloc(c[0].literals.*, new_size);
-            try logClause(&c[0], "simplified");
+            c[0].literals = try allocator.realloc(c[0].literals, new_size);
+            try logClause(&c[0].literals, "simplified");
         }
         try connectClause(&c[0]);
     }
-    clauses.resize(@intFromPtr(j) - @intFromPtr(begin));
+    try clauses.resize(@intFromPtr(j) - @intFromPtr(begin));
 }
 
 pub fn main() !u8 {
