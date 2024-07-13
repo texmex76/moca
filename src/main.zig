@@ -788,6 +788,29 @@ fn simplify() !void {
     try clauses.resize((@intFromPtr(j) - @intFromPtr(begin)) / @sizeOf(clause));
 }
 
+fn next64() u64 {
+    generator = @mulWithOverflow(generator, 6364136223846793005)[0];
+    generator = @addWithOverflow(generator, 1442695040888963407)[0];
+    assert(generator != 0);
+    return generator;
+}
+
+fn initializeSeed() !void {
+    if (thank_string_seen) {
+        for (thank_string) |c| {
+            generator ^= c;
+            _ = next64();
+        }
+        try verbose(1, "hashed '{s}' to seed '{d}'", .{ thank_string, generator });
+    }
+    try message("seed {d}", .{generator});
+}
+
+fn solve() !u8 {
+    try initializeSeed();
+    return 0;
+}
+
 pub fn main() !u8 {
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
@@ -816,5 +839,7 @@ pub fn main() !u8 {
         original_lineno.deinit();
     }
     try simplify();
+    const res = try solve();
+    _ = res;
     return 0;
 }
