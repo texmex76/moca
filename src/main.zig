@@ -806,9 +806,132 @@ fn initializeSeed() !void {
     try message("seed {d}", .{generator});
 }
 
+fn initializeRestart() !void {
+    restart_interval = 100 * @as(u64, @intCast(variables));
+    base_restart_interval = restart_interval;
+    switch (restart_scheduler) {
+        .never_restart => {
+            try message("never restart", .{});
+        },
+        .always_restart => {
+            try message("always restart", .{});
+        },
+        .fixed_restart => {
+            try message("fixed restart interval of {d}", .{restart_interval});
+        },
+        .reluctant_restart => {
+            try message("reluctant restart interval of {d}", .{restart_interval});
+        },
+        .geometric_restart => {
+            try message("geometric restart interval of {d}", .{restart_interval});
+        },
+        .arithmetic_restart => {
+            try message("arithmetic restart interval of {d}", .{restart_interval});
+        },
+    }
+    next_restart = stats.restarts + restart_interval;
+}
+
+fn randomLiteral() !void {}
+
+fn focusedRandomWalk() !void {}
+
+fn walksat() !void {}
+
+fn probsat() !void {}
+
 fn solve() !u8 {
     try initializeSeed();
-    return 0;
+    if (limit == invalid_position) {
+        try message("unlimited number of flipped variables", .{});
+    } else {
+        try message("limit {d} on number of flipped variables", .{limit});
+    }
+    try initializeRestart();
+    var res: u8 = 0;
+    if (found_empty_clause) {
+        try stdout.writeAll("s UNSATISFIABLE\n");
+        res = 20;
+    } else {
+        switch (algorithm) {
+            .random_algorithm => {
+                try randomLiteral();
+            },
+            .focused_algorithm => {
+                try focusedRandomWalk();
+            },
+            .walksat_algorithm => {
+                try walksat();
+            },
+            .probsat_algorithm => {
+                try probsat();
+            },
+        }
+        try message("reached minimum {d} unsatisfied clauses after {d} flipped variables and {d} restarts", .{ minimum, minimum_flipped, minimum_restarts });
+        if (!terminate and unsatisfied.items.len == 0) {
+            if (debug) {
+                try checkOriginalClausesSatisfied();
+            }
+            try stdout.writeAll("s SATISFIABLE\n");
+            if (!do_not_print_model) try printValues();
+        }
+    }
+    return res;
+}
+
+var buf = std.io.bufferedWriter(stdout.writer());
+var buf2 = std.io.bufferedWriter(stdout.writer());
+
+fn printValues() !void {
+    for (1..@as(u64, @intCast(variables)) + 1) |idx| {
+        const value = values[idx];
+        if (value != 0) try printValue(@as(i64, @intCast(@as(usize, @intCast(value)) * idx)));
+    }
+    try printValue(0);
+    std.debug.print("891 buf len: {d}\n", .{buf.buf.len});
+    if (buf.buf.len > 0) { // TODO: we need anothe way because this does not work
+        try flushBuffer();
+    }
+}
+
+fn printValue(lit: i64) !void {
+    try buf.writer().print(" {d}", .{lit});
+    if (buf.buf.len > 74) {
+        try flushBuffer();
+    }
+}
+
+fn flushBuffer() !void {
+    try buf2.writer().print("v", .{});
+    try buf2.flush();
+    try buf.flush();
+    try buf2.writer().print("\n", .{});
+    try buf2.flush();
+}
+
+fn checkOriginalClausesSatisfied() !void {
+    var start_of_last_clause: usize = 0;
+    var satisfied: bool = false;
+    var id: usize = 0;
+    for (0..original_literals.items.len) |i| {
+        const lit = original_literals.items[i];
+        if (lit != 0) {
+            if (values[lit2Idx(lit)] > 0) {
+                satisfied = true;
+            }
+        } else if (satisfied) {
+            start_of_last_clause = i + 1;
+            satisfied = false;
+            id += 1;
+        } else {
+            try stderr.writer().print("babywalk: fatal error: original clause[{d}] at line {d} unsatisfied:\n", .{ id + 1, original_lineno.items[id] });
+            for (start_of_last_clause..i) |j| {
+                try stderr.writer().print("{d} ", .{original_literals[j]});
+            }
+            try stderr.writer().print("\n");
+            return error.FatalError;
+        }
+    }
 }
 
 pub fn main() !u8 {
