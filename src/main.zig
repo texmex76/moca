@@ -758,33 +758,34 @@ fn simplify() !void {
     var j = begin;
     var i = j;
     continue_with_next_clause: while (i != end) {
-        var c = i;
+        j[0] = i[0];
         i += 1;
+        var c = j[0];
         j += 1;
         try simplified.resize(0);
         var new_size: usize = 0;
-        for (c[0].literals) |lit| {
+        for (c.literals) |lit| {
             const value = values[lit2Idx(lit)];
             if (value > 0) {
                 j -= 1;
-                try deleteClause(&c[0]);
+                try deleteClause(&c);
                 continue :continue_with_next_clause;
             }
             if (value == 0) try simplified.append(lit);
         }
         new_size = simplified.items.len;
         assert(new_size > 1);
-        if (new_size < c[0].literals.len) {
-            try logClause(&c[0].literals, "unsimplified");
+        if (new_size < c.literals.len) {
+            try logClause(&c.literals, "unsimplified");
             for (simplified.items, 0..) |lit, idx| {
-                c[0].literals[idx] = lit;
+                c.literals[idx] = lit;
             }
-            c[0].literals = try allocator.realloc(c[0].literals, new_size);
-            try logClause(&c[0].literals, "simplified");
+            c.literals = try allocator.realloc(c.literals, new_size);
+            try logClause(&c.literals, "simplified");
         }
-        try connectClause(&c[0]);
+        try connectClause(&c);
     }
-    try clauses.resize(@intFromPtr(j) - @intFromPtr(begin));
+    try clauses.resize((@intFromPtr(j) - @intFromPtr(begin)) / @sizeOf(clause));
 }
 
 pub fn main() !u8 {
