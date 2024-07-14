@@ -879,34 +879,34 @@ fn solve() !u8 {
     return res;
 }
 
-var buf = std.io.bufferedWriter(stdout.writer());
-var buf2 = std.io.bufferedWriter(stdout.writer());
+var buffer: [256]u8 = undefined;
+var buffer_len: usize = 0;
 
 fn printValues() !void {
-    for (1..@as(u64, @intCast(variables)) + 1) |idx| {
-        const value = values[idx];
-        if (value != 0) try printValue(@as(i64, @intCast(@as(usize, @intCast(value)) * idx)));
+    for (1..@as(usize, @intCast(variables)) + 1) |idx| {
+        const i = @as(i64, @intCast(idx));
+        const value = @as(i64, @intCast(values[lit2Idx(i)]));
+        if (value != 0) try printValue(value * i);
     }
     try printValue(0);
-    std.debug.print("891 buf len: {d}\n", .{buf.buf.len});
-    if (buf.buf.len > 0) { // TODO: we need anothe way because this does not work
-        try flushBuffer();
-    }
+    if (buffer_len > 0) try flushBuffer();
 }
 
 fn printValue(lit: i64) !void {
-    try buf.writer().print(" {d}", .{lit});
-    if (buf.buf.len > 74) {
-        try flushBuffer();
+    var str: [32]u8 = undefined;
+    const res = try std.fmt.bufPrint(&str, " {d}", .{lit});
+    if (buffer_len + res.len > 74) try flushBuffer();
+    for (res, buffer_len..) |char, idx| {
+        buffer[idx] = char;
     }
+    buffer_len += res.len;
 }
 
 fn flushBuffer() !void {
-    try buf2.writer().print("v", .{});
-    try buf2.flush();
-    try buf.flush();
-    try buf2.writer().print("\n", .{});
-    try buf2.flush();
+    try stdout.writeAll("v");
+    try stdout.writer().print("{s}", .{buffer[0..buffer_len]});
+    try stdout.writeAll("\n");
+    buffer_len = 0;
 }
 
 fn checkOriginalClausesSatisfied() !void {
