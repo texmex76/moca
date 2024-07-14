@@ -832,13 +832,13 @@ fn initializeRestart() !void {
     next_restart = stats.restarts + restart_interval;
 }
 
-fn randomLiteral() !void {}
+fn randomLiteral() !void {} // TODO:
 
-fn focusedRandomWalk() !void {}
+fn focusedRandomWalk() !void {} // TODO:
 
-fn walksat() !void {}
+fn walksat() !void {} // TODO:
 
-fn probsat() !void {}
+fn probsat() !void {} // TODO:
 
 fn solve() !u8 {
     try initializeSeed();
@@ -874,9 +874,39 @@ fn solve() !u8 {
             }
             try stdout.writeAll("s SATISFIABLE\n");
             if (!do_not_print_model) try printValues();
+            res = 10;
+        } else {
+            if (terminate) {
+                try stdout.writer().print("c terminated by {s}\n", .{describeSignal(termination_signal)});
+            }
+            try stdout.writeAll("s UNKNOWN\n");
+            res = 0;
         }
     }
     return res;
+}
+
+fn describeSignal(sig: c_int) []const u8 {
+    switch (sig) {
+        os.linux.SIG.INT => {
+            return "stop signal (SIGINT)";
+        },
+        os.linux.SIG.KILL => {
+            return "kill signal (SIGKILL)";
+        },
+        os.linux.SIG.SEGV => {
+            return "segmentation fault signal (SIGSEGV)";
+        },
+        os.linux.SIG.TERM => {
+            return "forced termination signal (SIGTERM)";
+        },
+        os.linux.SIG.ALRM => {
+            return "timeout signal (SIGALRM)";
+        },
+        else => {
+            return "unknown";
+        },
+    }
 }
 
 var buffer: [256]u8 = undefined;
