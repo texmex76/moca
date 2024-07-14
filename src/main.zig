@@ -832,7 +832,102 @@ fn initializeRestart() !void {
     next_restart = stats.restarts + restart_interval;
 }
 
-fn randomLiteral() !void {} // TODO:
+fn isTimeToRestart() bool {
+    if (restart_scheduler == restart_scheduler_type.reluctant_restart) return true;
+    if (restart_scheduler == restart_scheduler_type.never_restart) return false;
+    if (stats.flipped < next_restart) return false;
+    // TODO:
+}
+
+fn pickRandomFalsifiedLiteral() i64 {
+    return 0;
+} // TODO:
+
+fn makeClauses(lit: i64) !void {
+    _ = lit;
+} // TODO:
+
+fn breakClauses(lit: i64) !void {
+    _ = lit;
+} // TODO:
+
+fn flipLiteral(lit: i64) !void {
+    try log("flipping {d}", .{lit});
+    assert(!forced[@as(usize, @intCast(lit))]);
+    assert(values[lit2Idx(lit)] < 0);
+    values[lit2Idx(lit)] = -1;
+    values[lit2Idx(-lit)] = 1;
+    stats.flipped += 1;
+    try makeClauses(lit);
+    try breakClauses(-lit);
+    try updateMinimun();
+}
+
+fn next32() u32 {
+    const res: u32 = @truncate(next64() >> 32);
+    return res;
+}
+
+fn nextBool() bool {
+    return next32() < 2147483648;
+}
+
+fn satisfied(cls: *clause) bool {
+    for (cls.literals) |lit| {
+        if (values[lit2Idx(lit)] > 0) return true;
+    }
+    return false;
+}
+
+fn breakClause(cls: *clause) !void {
+    _ = cls;
+} // TODO:
+
+fn restart() !void {
+    try log("restarting", .{});
+    stats.restarts += 1;
+    for (1..@as(usize, @intCast(variables)) + 1) |idx| {
+        if (forced[idx]) continue;
+        const value: i2 = if (nextBool()) -1 else 1;
+        const i = @as(i64, @intCast(idx));
+        values[lit2Idx(i)] = value;
+        values[lit2Idx(-i)] = -value;
+        try log("assign {d} in restart", .{if (value < 0) -i else i});
+    }
+    for (unsatisfied.items) |c| {
+        c.pos = invalid_position;
+    }
+    try unsatisfied.resize(0);
+    var broken: usize = 0;
+    var visited: usize = 0;
+    for (clauses.items) |*c| {
+        visited += 1;
+        if (!satisfied(c)) {
+            try breakClause(c);
+            broken += 1;
+        }
+    }
+    stats.broken_clauses += broken;
+    stats.break_visited += visited;
+    try verbose(2, "{b} clauses broken after restart {d} and {d} flipped", .{ unsatisfied.items.len, stats.restarts, stats.flipped });
+    best = invalid_minimum;
+    try updateMinimun();
+}
+
+fn updateMinimun() !void {} // TODO:
+
+fn randomLiteral() !void {
+    try message("using random literal picking algorithm", .{});
+    try restart();
+    while (!(unsatisfied.items.len == 0) and stats.flipped > limit and !terminate) {
+        if (isTimeToRestart()) {
+            try restart();
+        } else {
+            const lit = pickRandomFalsifiedLiteral();
+            try flipLiteral(lit);
+        }
+    }
+}
 
 fn focusedRandomWalk() !void {} // TODO:
 
@@ -941,17 +1036,17 @@ fn flushBuffer() !void {
 
 fn checkOriginalClausesSatisfied() !void {
     var start_of_last_clause: usize = 0;
-    var satisfied: bool = false;
+    var is_satisfied: bool = false;
     var id: usize = 0;
     for (0..original_literals.items.len) |i| {
         const lit = original_literals.items[i];
         if (lit != 0) {
             if (values[lit2Idx(lit)] > 0) {
-                satisfied = true;
+                is_satisfied = true;
             }
-        } else if (satisfied) {
+        } else if (is_satisfied) {
             start_of_last_clause = i + 1;
-            satisfied = false;
+            is_satisfied = false;
             id += 1;
         } else {
             try stderr.writer().print("babywalk: fatal error: original clause[{d}] at line {d} unsatisfied:\n", .{ id + 1, original_lineno.items[id] });
