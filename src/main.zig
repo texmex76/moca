@@ -836,14 +836,89 @@ fn isTimeToRestart() bool {
     if (restart_scheduler == restart_scheduler_type.reluctant_restart) return true;
     if (restart_scheduler == restart_scheduler_type.never_restart) return false;
     if (stats.flipped < next_restart) return false;
-    // TODO:
+    if (restart_scheduler == restart_scheduler_type.arithmetic_restart) {
+        restart_interval += base_restart_interval;
+    } else if (restart_scheduler == restart_scheduler_type.geometric_restart) {
+        restart_interval *= 2;
+    } else if (restart_scheduler == restart_scheduler_type.reluctant_restart) {
+        var u = reluctant_state[0];
+        var v = reluctant_state[1];
+        if ((u & (~u + 1)) == v) {
+            u += 1;
+            v = 1;
+        } else {
+            v *= 2;
+        }
+        restart_interval = v * base_restart_interval;
+        reluctant_state[0] = u;
+        reluctant_state[1] = v;
+    } else {
+        assert(restart_scheduler == restart_scheduler_type.fixed_restart);
+    }
+    next_restart = stats.flipped + restart_interval;
+    return true;
+}
+
+fn pickModular(mod: u64) u64 {
+    assert(mod != 0);
+    const tmp = next32();
+    const fraction = @as(f64, @floatFromInt(tmp)) / 4294967296.0;
+    const res = @as(u64, @intFromFloat(@as(f64, @floatFromInt(mod)) * fraction));
+    assert(res < mod);
+    return res;
 }
 
 fn pickRandomFalsifiedLiteral() i64 {
-    return 0;
-} // TODO:
+    var res = pickModular(@as(u64, @intCast(variables))) + 1;
+    while (forced[res]) {
+        res = pickModular(@as(u64, @intCast(variables))) + 1;
+    }
+    var res_int = @as(i64, @intCast(res));
+    if (values[lit2Idx(res_int)] > 0) {
+        res_int = -res_int;
+    }
+    return res_int;
+}
 
 fn makeClauses(lit: i64) !void {
+    if (occurrences[lit2Idx(lit)].items.len < unsatisfied.items.len) {
+        try makeClausesAlongOccurrences(lit);
+    } else {
+        try makeClausesAlongUnsatisfied(lit);
+    }
+}
+
+fn makeClausesAlongOccurrences(lit: i64) !void {
+    var made: usize = 0;
+    var visited: usize = 0;
+    assert(values[lit2Idx(lit)] > 0);
+    const occs = occurrences[lit2Idx(lit)];
+    try log("making clauses with {d} along with {d} occurrences", .{ lit, occs.items.len });
+    for (occs.items) |c| {
+        const unsatisfied_size = unsatisfied.items.len;
+        if (unsatisfied_size == 0) break;
+        visited += 1;
+        if (c.pos >= unsatisfied_size) continue;
+        assert(unsatisfied.items[c.pos] == c);
+        if (c.pos != unsatisfied_size - 1) {
+            var d = unsatisfied.getLast();
+            d.pos = c.pos;
+            unsatisfied.items[d.pos] = d;
+        }
+        _ = unsatisfied.pop();
+        try makeClause(c);
+        made += 1;
+    }
+    stats.made_clauses += made;
+    stats.make_visited += visited;
+    try log("made {d} clauses with flipped {d}", .{ made, lit });
+}
+
+fn makeClause(cls: *clause) !void {
+    _ = cls;
+} // TODO:
+
+fn makeClausesAlongUnsatisfied(lit: i64) !void {
     _ = lit;
 } // TODO:
 
