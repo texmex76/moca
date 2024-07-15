@@ -51,6 +51,7 @@ fn lit2Idx(lit: i64) usize {
     }
 }
 
+var start_time: f64 = 0;
 const invalid_position: u64 = std.math.maxInt(u64);
 const invalid_minimum: u64 = std.math.maxInt(u64);
 const invalid_break_value: u64 = std.math.maxInt(u64);
@@ -397,7 +398,7 @@ fn expectDigit(ch: u8) !void {
 }
 
 fn parse() !void {
-    const start = std.time.timestamp();
+    const start = std.time.microTimestamp();
 
     if (!input_path_seen or std.mem.eql(u8, input_path, "-")) {
         input_file = stdin.reader();
@@ -582,7 +583,11 @@ fn parse() !void {
         return error.ParseError;
     }
 
-    try message("parsed {d} clauses in {d:.2} seconds", .{ stats.parsed, std.time.timestamp() - start });
+    try message("parsed {d} clauses in {d:.2} seconds", .{ stats.parsed, toSeconds(std.time.microTimestamp() - start) });
+}
+
+fn toSeconds(tm: i64) f64 {
+    return @as(f64, @floatFromInt(tm)) / 1000;
 }
 
 fn propagate() !bool {
@@ -1335,15 +1340,15 @@ fn percent(a: anytype, b: anytype) f64 {
 
 fn report() !void {
     if (verbosity < 0) return;
-    const time = std.time.timestamp();
+    const elapsed = toSeconds(std.time.microTimestamp()) - start_time;
     try stdout.writer().print("c {s: <21} {d:13} {d:14.2} flipped/restart\n", .{ "restarts:", stats.restarts, average(stats.flipped, stats.restarts) });
-    try stdout.writer().print("c {s: <21} {d:13} {d:14.2} per second\n", .{ "flipped-variables:", stats.flipped, average(stats.flipped, time) });
-    try stdout.writer().print("c {s: <21} {d:13} {d:14.2} flipped\n", .{ "random-walks:", stats.random_walks, percent(stats.random_walks, stats.flipped) });
+    try stdout.writer().print("c {s: <21} {d:13} {d:14.2} per second\n", .{ "flipped-variables:", stats.flipped, @as(f64, @floatFromInt(stats.flipped)) / elapsed });
+    try stdout.writer().print("c {s: <21} {d:13} {d:14.2} % flipped\n", .{ "random-walks:", stats.random_walks, percent(stats.random_walks, stats.flipped) });
     try stdout.writer().print("c {s: <21} {d:13} {d:14.2} per flip\n", .{ "made-clauses:", stats.made_clauses, average(stats.made_clauses, stats.flipped) });
     try stdout.writer().print("c {s: <21} {d:13} {d:14.2} per flip\n", .{ "make-visited:", stats.make_visited, average(stats.make_visited, stats.flipped) });
     try stdout.writer().print("c {s: <21} {d:13} {d:14.2} per flip\n", .{ "broken-clauses:", stats.broken_clauses, average(stats.broken_clauses, stats.flipped) });
     try stdout.writer().print("c {s: <21} {d:13} {d:14.2} per flip\n", .{ "break-visited:", stats.break_visited, average(stats.break_visited, stats.flipped) });
-    try stdout.writer().print("c {s: <21} {d:28.2} seconds\n", .{ "process-time:", time });
+    try stdout.writer().print("c {s: <21} {d:28.2} seconds\n", .{ "process-time:", elapsed });
 }
 
 fn goodbye(result: u8) !void {
@@ -1354,6 +1359,7 @@ fn goodbye(result: u8) !void {
 }
 
 pub fn main() !u8 {
+    start_time = toSeconds(std.time.microTimestamp());
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
     options(args) catch |err| switch (err) {
