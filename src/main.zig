@@ -66,6 +66,7 @@ var occurrences: []ArrayList(*clause) = undefined;
 var simplified = ArrayList(i64).init(allocator);
 var unsimplified = ArrayList(i64).init(allocator);
 var trail = ArrayList(i64).init(allocator);
+var min_break_value_literals = ArrayList(i64).init(allocator);
 var propagated: u64 = 0;
 var values: []i2 = undefined;
 var marks: []bool = undefined;
@@ -130,6 +131,7 @@ var stats = struct {
     made_clauses: u64,
     broken_clauses: u64,
     random_walks: u64,
+    score_visited: u64,
 }{
     .added = 0,
     .parsed = 0,
@@ -140,6 +142,7 @@ var stats = struct {
     .made_clauses = 0,
     .broken_clauses = 0,
     .random_walks = 0,
+    .score_visited = 0,
 };
 
 // For debugging mode
@@ -1105,18 +1108,66 @@ fn walksat() !void {
     }
 }
 
+fn critical(cls: *clause) bool {
+    var unit: i64 = 0;
+    for (cls.literals) |lit| {
+        const value = values[lit2Idx(lit)];
+        if (value < 0) continue;
+        assert(value > 0);
+        if (unit != 0) {
+            return false;
+        }
+        unit = lit;
+    }
+    return unit != 0;
+}
+
 fn breakValue(lit: i64, max: usize) !usize {
-    _ = lit;
-    _ = max;
-    return 0;
-} // TODO:
+    assert(values[lit2Idx(lit)] > 0);
+    var res: usize = 0;
+    // var visited = 0; // not used in C++ code
+    for (occurrences[lit2Idx(lit)].items) |c| {
+        // visited += 1;
+        if (critical(c)) {
+            res += 1;
+            if (res == max) break;
+        }
+    }
+    stats.score_visited += 1;
+    try log("break-value {d} of literal {d}", .{ res, lit });
+    return res;
+}
+
+fn nextDoubleInclusive() f64 {
+    const res = @as(f64, @floatFromInt(next32())) / 4294967295.0;
+    return res;
+}
 
 fn selectLiteralInUnsatisfiedClause(cls: *clause) !i64 {
-    var min_break_value = invalid_break_value;
+    var min_break_value = @as(u64, @intCast(invalid_break_value));
     for (cls.literals) |lit| {
-        const not_lit_break_value = breakValue(-lit);
+        const not_lit_break_value = try breakValue(-lit, std.math.maxInt(usize));
+        if (not_lit_break_value > min_break_value) continue;
+        if (not_lit_break_value < min_break_value) {
+            min_break_value = not_lit_break_value;
+            try min_break_value_literals.resize(0);
+        }
+        try min_break_value_literals.append(lit);
     }
-    // TODO:
+    try logClause(&cls.literals, "minimum break value {d} in"); // TODO: min_break_value
+    if (min_break_value != 0) {
+        const p = nextDoubleInclusive();
+        if (p < 0.57) { // Magic constant!
+            try log("falling back to random literal in clause", .{});
+            return pickRandomLiteralInUnsatisfiedClause(cls);
+        }
+    }
+    const min_break_value_literals_size = min_break_value_literals.items.len;
+    assert(min_break_value_literals_size <= std.math.maxInt(usize));
+    const pos = pickModular(min_break_value_literals_size);
+    const res = min_break_value_literals.items[pos];
+    try log("picked at position {d} literal {d} with break-value {d}", .{ pos, res, min_break_value });
+    return res;
 }
 
 fn probsat() !void {} // TODO:
