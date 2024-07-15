@@ -74,6 +74,7 @@ var forced: []bool = undefined;
 // The state of the local search solver
 var unsatisfied = ArrayList(*clause).init(allocator);
 var limit = invalid_limit;
+var next_unsatisfied: u64 = 0;
 var generator: u64 = 0;
 var minimum = invalid_minimum;
 var best = invalid_minimum;
@@ -128,7 +129,7 @@ var stats = struct {
     break_visited: u64,
     made_clauses: u64,
     broken_clauses: u64,
-    random_walk: u64,
+    random_walks: u64,
 }{
     .added = 0,
     .parsed = 0,
@@ -138,7 +139,7 @@ var stats = struct {
     .break_visited = 0,
     .made_clauses = 0,
     .broken_clauses = 0,
-    .random_walk = 0,
+    .random_walks = 0,
 };
 
 // For debugging mode
@@ -1045,7 +1046,7 @@ fn updateMinimun() !void {} // TODO:
 fn randomLiteral() !void {
     try message("using random literal picking algorithm", .{});
     try restart();
-    while (!(unsatisfied.items.len == 0) and stats.flipped > limit and !terminate) {
+    while (!(unsatisfied.items.len == 0) and stats.flipped < limit and !terminate) {
         if (isTimeToRestart()) {
             try restart();
         } else {
@@ -1055,9 +1056,68 @@ fn randomLiteral() !void {
     }
 }
 
-fn focusedRandomWalk() !void {} // TODO:
+fn focusedRandomWalk() !void {
+    try message("using focused random walk algorithm", .{});
+    try restart();
+    while (!(unsatisfied.items.len == 0) and stats.flipped < limit and !terminate) {
+        if (isTimeToRestart()) {
+            try restart();
+        } else {
+            const c = try pickUnsatisfiedClause();
+            const lit = try pickRandomLiteralInUnsatisfiedClause(c);
+            try flipLiteral(lit);
+        }
+    }
+}
 
-fn walksat() !void {} // TODO:
+fn pickUnsatisfiedClause() !*clause {
+    var pos = next_unsatisfied;
+    next_unsatisfied += 1;
+    if (pos >= unsatisfied.items.len) {
+        pos = 0;
+        next_unsatisfied = 1;
+    }
+    const res = unsatisfied.items[pos];
+    try log("picked at position {d}", .{res});
+    return res;
+}
+
+fn pickRandomLiteralInUnsatisfiedClause(cls: *clause) !i64 {
+    assert(cls.literals.len < std.math.maxInt(usize));
+    const pos = pickModular(cls.literals.len);
+    const res = cls.literals[pos];
+    try log("random walk picked at position {d} literal {d}", .{ pos, res });
+    stats.random_walks += 1;
+    return res;
+}
+
+fn walksat() !void {
+    try message("using WALKSAT algorithm", .{});
+    try restart();
+    while (!(unsatisfied.items.len == 0) and stats.flipped < limit and !terminate) {
+        if (isTimeToRestart()) {
+            try restart();
+        } else {
+            const c = try pickUnsatisfiedClause();
+            const lit = try selectLiteralInUnsatisfiedClause(c);
+            try flipLiteral(lit);
+        }
+    }
+}
+
+fn breakValue(lit: i64, max: usize) !usize {
+    _ = lit;
+    _ = max;
+    return 0;
+} // TODO:
+
+fn selectLiteralInUnsatisfiedClause(cls: *clause) !i64 {
+    var min_break_value = invalid_break_value;
+    for (cls.literals) |lit| {
+        const not_lit_break_value = breakValue(-lit);
+    }
+    // TODO:
+}
 
 fn probsat() !void {} // TODO:
 
