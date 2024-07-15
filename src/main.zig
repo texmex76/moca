@@ -915,16 +915,65 @@ fn makeClausesAlongOccurrences(lit: i64) !void {
 }
 
 fn makeClause(cls: *clause) !void {
-    _ = cls;
-} // TODO:
+    try logClause(&cls.literals, "made");
+    cls.pos = invalid_position;
+}
+
+fn contains(cls: *clause, lit: i64) bool {
+    for (cls.literals) |other| {
+        if (other == lit) {
+            return true;
+        }
+    }
+    return false;
+}
 
 fn makeClausesAlongUnsatisfied(lit: i64) !void {
-    _ = lit;
-} // TODO:
+    try log("making clauses with {d} along {d} unsatisfied", .{ lit, unsatisfied.items.len });
+    assert(values[lit2Idx(lit)] > 0);
+    var made: usize = 0;
+    var visited: usize = 0;
+    const begin = unsatisfied.items.ptr;
+    const end = unsatisfied.items.ptr + unsatisfied.items.len - 1;
+    var j = begin;
+    var i = j;
+    while (i != end) {
+        const c = i[0];
+        i += 1;
+        visited += 1;
+        if (contains(c, lit)) {
+            try makeClause(c);
+            made += 1;
+        } else if (i != j) {
+            c.pos = (@intFromPtr(j) - @intFromPtr(begin)) / @sizeOf(clause);
+            j[0] = c;
+            j += 1;
+        } else {
+            j += 1;
+        }
+    }
+    try unsatisfied.resize((@intFromPtr(j) - @intFromPtr(begin)) / @sizeOf(clause));
+    stats.made_clauses += made;
+    stats.make_visited += visited;
+    try log("made {d} clauses with flipped {d}", .{ made, lit });
+}
 
 fn breakClauses(lit: i64) !void {
-    _ = lit;
-} // TODO:
+    try log("breaking clauses with {d}", .{lit});
+    assert(values[lit2Idx(lit)] < 0);
+    var broken: usize = 0;
+    var visited: usize = 0;
+    for (occurrences[lit2Idx(lit)].items) |c| {
+        visited += 1;
+        if (!satisfied(c)) {
+            try breakClause(c);
+            broken += 1;
+        }
+    }
+    stats.broken_clauses += broken;
+    stats.break_visited += visited;
+    try log("broken {d} clauses with flipped {d}", .{ broken, lit });
+}
 
 fn flipLiteral(lit: i64) !void {
     try log("flipping {d}", .{lit});
@@ -955,8 +1004,10 @@ fn satisfied(cls: *clause) bool {
 }
 
 fn breakClause(cls: *clause) !void {
-    _ = cls;
-} // TODO:
+    try logClause(&cls.literals, "broken");
+    cls.pos = unsatisfied.items.len;
+    try unsatisfied.append(cls);
+}
 
 fn restart() !void {
     try log("restarting", .{});
