@@ -51,10 +51,10 @@ fn lit2Idx(lit: i64) usize {
     }
 }
 
-const invalid_position = ~@as(u32, 0);
-const invalid_minimum = ~@as(u32, 0);
-const invalid_break_value = ~@as(u32, 0);
-const invalid_limit = ~@as(u64, 0);
+const invalid_position: u64 = std.math.maxInt(u64);
+const invalid_minimum: u64 = std.math.maxInt(u64);
+const invalid_break_value: u64 = std.math.maxInt(u64);
+const invalid_limit: u64 = std.math.maxInt(u64);
 
 // Global state of the preprocessor
 var variables: i64 = 0;
@@ -1044,12 +1044,26 @@ fn restart() !void {
     try updateMinimun();
 }
 
-fn updateMinimun() !void {} // TODO:
+fn updateMinimun() !void {
+    const unsatisfied_size = unsatisfied.items.len;
+    if (unsatisfied_size < minimum) {
+        minimum = unsatisfied_size;
+        minimum_restarts = stats.restarts;
+        minimum_flipped = stats.flipped;
+        try verbose(1, "minimum {d} unsatisfied clauses after {d} flipped variables and {d} restarts", .{ minimum, stats.flipped, stats.restarts });
+    }
+    if (restart_scheduler != restart_scheduler_type.always_restart and restart_scheduler != restart_scheduler_type.never_restart) {
+        if (unsatisfied_size < best) {
+            best = unsatisfied_size;
+            try verbose(3, "best {d} unsatisfied clauses after {d} flipped variables and {d} restarts", .{ best, stats.flipped, stats.restarts });
+        }
+    }
+}
 
 fn randomLiteral() !void {
     try message("using random literal picking algorithm", .{});
     try restart();
-    while (!(unsatisfied.items.len == 0) and stats.flipped < limit and !terminate) {
+    while (unsatisfied.items.len != 0 and stats.flipped < limit and !terminate) {
         if (isTimeToRestart()) {
             try restart();
         } else {
@@ -1062,7 +1076,7 @@ fn randomLiteral() !void {
 fn focusedRandomWalk() !void {
     try message("using focused random walk algorithm", .{});
     try restart();
-    while (!(unsatisfied.items.len == 0) and stats.flipped < limit and !terminate) {
+    while (unsatisfied.items.len != 0 and stats.flipped < limit and !terminate) {
         if (isTimeToRestart()) {
             try restart();
         } else {
@@ -1097,7 +1111,7 @@ fn pickRandomLiteralInUnsatisfiedClause(cls: *clause) !i64 {
 fn walksat() !void {
     try message("using WALKSAT algorithm", .{});
     try restart();
-    while (!(unsatisfied.items.len == 0) and stats.flipped < limit and !terminate) {
+    while (unsatisfied.items.len != 0 and stats.flipped < limit and !terminate) {
         if (isTimeToRestart()) {
             try restart();
         } else {
@@ -1170,7 +1184,19 @@ fn selectLiteralInUnsatisfiedClause(cls: *clause) !i64 {
     return res;
 }
 
-fn probsat() !void {} // TODO:
+fn probsat() !void {
+    try message("using ProbSAT algorithm", .{});
+    try restart();
+    while (unsatisfied.items.len != 0 and stats.flipped < limit and !terminate) {
+        const c = try pickUnsatisfiedClause();
+        const lit = sampleLiteralInUnsatisfiedClause(c);
+        try flipLiteral(lit);
+    }
+}
+
+fn sampleLiteralInUnsatisfiedClause(cls: *clause) i64 {
+    return cls.literals[0]; // TODO+ implement ProbSAT sampling
+}
 
 fn solve() !u8 {
     try initializeSeed();
@@ -1296,6 +1322,37 @@ fn checkOriginalClausesSatisfied() !void {
     }
 }
 
+fn average(a: anytype, b: anytype) f64 {
+    if (b == 0) {
+        return 0;
+    }
+    return @as(f64, @floatFromInt(a)) / @as(f64, @floatFromInt(b));
+}
+
+fn percent(a: anytype, b: anytype) f64 {
+    return average(100 * a, b);
+}
+
+fn report() !void {
+    if (verbosity < 0) return;
+    const time = std.time.timestamp();
+    try stdout.writer().print("c {s: <21} {d:13} {d:14.2} flipped/restart\n", .{ "restarts:", stats.restarts, average(stats.flipped, stats.restarts) });
+    try stdout.writer().print("c {s: <21} {d:13} {d:14.2} per second\n", .{ "flipped-variables:", stats.flipped, average(stats.flipped, time) });
+    try stdout.writer().print("c {s: <21} {d:13} {d:14.2} flipped\n", .{ "random-walks:", stats.random_walks, percent(stats.random_walks, stats.flipped) });
+    try stdout.writer().print("c {s: <21} {d:13} {d:14.2} per flip\n", .{ "made-clauses:", stats.made_clauses, average(stats.made_clauses, stats.flipped) });
+    try stdout.writer().print("c {s: <21} {d:13} {d:14.2} per flip\n", .{ "make-visited:", stats.make_visited, average(stats.make_visited, stats.flipped) });
+    try stdout.writer().print("c {s: <21} {d:13} {d:14.2} per flip\n", .{ "broken-clauses:", stats.broken_clauses, average(stats.broken_clauses, stats.flipped) });
+    try stdout.writer().print("c {s: <21} {d:13} {d:14.2} per flip\n", .{ "break-visited:", stats.break_visited, average(stats.break_visited, stats.flipped) });
+    try stdout.writer().print("c {s: <21} {d:28.2} seconds\n", .{ "process-time:", time });
+}
+
+fn goodbye(result: u8) !void {
+    if (thank_string_seen) {
+        try message("{s}solved thanks to '{s}'", .{ if (result != 0) "" else "un", thank_string });
+    }
+    try message("exit {d}", .{result});
+}
+
 pub fn main() !u8 {
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
@@ -1322,9 +1379,11 @@ pub fn main() !u8 {
         unsimplified.deinit();
         original_literals.deinit();
         original_lineno.deinit();
+        min_break_value_literals.deinit();
     }
     try simplify();
     const res = try solve();
-    _ = res;
-    return 0;
+    try report();
+    try goodbye(res);
+    return res;
 }
