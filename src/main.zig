@@ -20,6 +20,7 @@ const usage =
     \\  -n  do not print satisfying assignment (model)
     \\  -v  increase verbosity level
     \\  -q  disable all messages
+    \\  -l  enable logging for debugging
     \\  --random   random literal algorithm
     \\  --focused  focused random walk algorithm
     \\  --walksat  WalkSAT algorithm (not implemented)
@@ -60,7 +61,7 @@ const invalid_limit: u64 = std.math.maxInt(u64);
 // Global state of the preprocessor
 var variables: i64 = 0;
 var found_empty_clause: bool = false;
-var clauses = ArrayList(clause).init(allocator);
+var clauses = ArrayList(*clause).init(allocator);
 var occurrences: []ArrayList(*clause) = undefined;
 
 // Part of the state needed for parsing and unit propagation
@@ -96,7 +97,7 @@ const restart_scheduler_type = enum {
 var restart_scheduler = restart_scheduler_type.reluctant_restart;
 
 var base_restart_interval: u64 = 0;
-var reluctant_state = [2]u64{ 0, 0 };
+var reluctant_state = [2]u64{ 1, 1 };
 var restart_interval: u64 = 0;
 var next_restart: u64 = 0;
 
@@ -319,13 +320,15 @@ fn options(args: [][:0]u8) !void {
 fn message(comptime fmt: []const u8, args: anytype) !void {
     if (verbosity < 0)
         return;
+    try stdout.writeAll("c ");
     try stdout.writer().print(fmt, args);
     try stdout.writeAll("\n");
 }
 
 fn verbose(trigger_at_v: i32, comptime fmt: []const u8, args: anytype) !void {
-    if (trigger_at_v <= verbosity)
+    if (trigger_at_v > verbosity)
         return;
+    try stdout.writeAll("c ");
     try stdout.writer().print(fmt, args);
     try stdout.writeAll("\n");
 }
@@ -398,7 +401,7 @@ fn expectDigit(ch: u8) !void {
 }
 
 fn parse() !void {
-    const start = std.time.microTimestamp();
+    const start = toSeconds(std.time.microTimestamp());
 
     if (!input_path_seen or std.mem.eql(u8, input_path, "-")) {
         input_file = stdin.reader();
@@ -549,7 +552,7 @@ fn parse() !void {
                 var c = try newClause(&simplified);
                 if (c.literals.len > 1) {
                     try clauses.append(c);
-                    try connectClause(&c);
+                    try connectClause(c);
                 }
                 const size = c.literals.len;
                 if (size == 0) {
@@ -559,7 +562,7 @@ fn parse() !void {
                 } else if (size == 1) {
                     const unit = c.literals[0];
                     try logClause(&c.literals, "found unit");
-                    try rootLevelAssign(unit, &c);
+                    try rootLevelAssign(unit, c);
                     const ok = try propagate();
                     if (!ok) {
                         try verbose(1, "root-level propagation yields conflict", .{});
@@ -583,7 +586,7 @@ fn parse() !void {
         return error.ParseError;
     }
 
-    try message("parsed {d} clauses in {d:.2} seconds", .{ stats.parsed, toSeconds(std.time.microTimestamp() - start) });
+    try message("parsed {d} clauses in {d:.2} seconds", .{ stats.parsed, toSeconds(std.time.microTimestamp()) - start }); // FIXME: time broken
 }
 
 fn toSeconds(tm: i64) f64 {
@@ -650,7 +653,7 @@ fn connectClause(cls: *clause) !void {
     }
 }
 
-fn newClause(literals: *ArrayList(i64)) !clause {
+fn newClause(literals: *ArrayList(i64)) !*clause {
     if (debug) {
         checkSimplified(literals);
     }
@@ -660,7 +663,11 @@ fn newClause(literals: *ArrayList(i64)) !clause {
     }
     try logClause(&lits, "new");
     stats.added += 1;
-    return clause{ .id = stats.added, .pos = invalid_position, .literals = lits };
+    var cls = try allocator.create(clause);
+    cls.id = stats.added;
+    cls.pos = invalid_position;
+    cls.literals = lits;
+    return cls;
 }
 
 fn logClauseAndLit(cls: *const []i64, lit: i64, msg: anytype) !void {
@@ -762,8 +769,11 @@ fn simplify() !void {
     for (occurrences) |*list| {
         try list.resize(0);
     }
-    const begin: [*]clause = clauses.items.ptr;
-    const end: [*]clause = clauses.items.ptr + clauses.items.len - 1;
+    const begin: [*]*clause = clauses.items.ptr;
+    var end: [*]*clause = clauses.items.ptr + clauses.items.len - 1;
+    if (clauses.items.len == 0) {
+        end = clauses.items.ptr;
+    } // Above formula does not work for 0-size
     var j = begin;
     var i = j;
     continue_with_next_clause: while (i != end) {
@@ -777,7 +787,7 @@ fn simplify() !void {
             const value = values[lit2Idx(lit)];
             if (value > 0) {
                 j -= 1;
-                try deleteClause(&c);
+                try deleteClause(c);
                 continue :continue_with_next_clause;
             }
             if (value == 0) try simplified.append(lit);
@@ -790,11 +800,12 @@ fn simplify() !void {
                 c.literals[idx] = lit;
             }
             c.literals = try allocator.realloc(c.literals, new_size);
+            assert(c.literals.len == new_size);
             try logClause(&c.literals, "simplified");
         }
-        try connectClause(&c);
+        try connectClause(c);
     }
-    try clauses.resize((@intFromPtr(j) - @intFromPtr(begin)) / @sizeOf(clause));
+    try clauses.resize((@intFromPtr(j) - @intFromPtr(begin)) / @sizeOf(*clause));
 }
 
 fn next64() u64 {
@@ -841,8 +852,8 @@ fn initializeRestart() !void {
     next_restart = stats.restarts + restart_interval;
 }
 
-fn isTimeToRestart() bool {
-    if (restart_scheduler == restart_scheduler_type.reluctant_restart) return true;
+fn isTimeToRestart() !bool {
+    if (restart_scheduler == restart_scheduler_type.always_restart) return true;
     if (restart_scheduler == restart_scheduler_type.never_restart) return false;
     if (stats.flipped < next_restart) return false;
     if (restart_scheduler == restart_scheduler_type.arithmetic_restart) {
@@ -861,6 +872,7 @@ fn isTimeToRestart() bool {
         restart_interval = v * base_restart_interval;
         reluctant_state[0] = u;
         reluctant_state[1] = v;
+        try verbose(3, "reluctant u: {d} v: {d}", .{ u, v });
     } else {
         assert(restart_scheduler == restart_scheduler_type.fixed_restart);
     }
@@ -986,10 +998,10 @@ fn breakClauses(lit: i64) !void {
 
 fn flipLiteral(lit: i64) !void {
     try log("flipping {d}", .{lit});
-    assert(!forced[@as(usize, @intCast(lit))]);
+    assert(!forced[@as(usize, @intCast(@abs(lit)))]);
     assert(values[lit2Idx(lit)] < 0);
-    values[lit2Idx(lit)] = -1;
-    values[lit2Idx(-lit)] = 1;
+    values[lit2Idx(-lit)] = -1;
+    values[lit2Idx(lit)] = 1;
     stats.flipped += 1;
     try makeClauses(lit);
     try breakClauses(-lit);
@@ -1035,7 +1047,7 @@ fn restart() !void {
     try unsatisfied.resize(0);
     var broken: usize = 0;
     var visited: usize = 0;
-    for (clauses.items) |*c| {
+    for (clauses.items) |c| {
         visited += 1;
         if (!satisfied(c)) {
             try breakClause(c);
@@ -1044,7 +1056,7 @@ fn restart() !void {
     }
     stats.broken_clauses += broken;
     stats.break_visited += visited;
-    try verbose(2, "{b} clauses broken after restart {d} and {d} flipped", .{ unsatisfied.items.len, stats.restarts, stats.flipped });
+    try verbose(2, "{d} clauses broken after restart {d} and {d} flipped", .{ unsatisfied.items.len, stats.restarts, stats.flipped });
     best = invalid_minimum;
     try updateMinimun();
 }
@@ -1069,7 +1081,8 @@ fn randomLiteral() !void {
     try message("using random literal picking algorithm", .{});
     try restart();
     while (unsatisfied.items.len != 0 and stats.flipped < limit and !terminate) {
-        if (isTimeToRestart()) {
+        const is_time_to_restart = try isTimeToRestart();
+        if (is_time_to_restart) {
             try restart();
         } else {
             const lit = pickRandomFalsifiedLiteral();
@@ -1082,7 +1095,8 @@ fn focusedRandomWalk() !void {
     try message("using focused random walk algorithm", .{});
     try restart();
     while (unsatisfied.items.len != 0 and stats.flipped < limit and !terminate) {
-        if (isTimeToRestart()) {
+        const is_time_to_restart = try isTimeToRestart();
+        if (is_time_to_restart) {
             try restart();
         } else {
             const c = try pickUnsatisfiedClause();
@@ -1100,7 +1114,7 @@ fn pickUnsatisfiedClause() !*clause {
         next_unsatisfied = 1;
     }
     const res = unsatisfied.items[pos];
-    try log("picked at position {d}", .{res});
+    try logClause(&res.literals, "picked at position {d}"); // TODO: insert res for {d}
     return res;
 }
 
@@ -1117,7 +1131,8 @@ fn walksat() !void {
     try message("using WALKSAT algorithm", .{});
     try restart();
     while (unsatisfied.items.len != 0 and stats.flipped < limit and !terminate) {
-        if (isTimeToRestart()) {
+        const is_time_to_restart = try isTimeToRestart();
+        if (is_time_to_restart) {
             try restart();
         } else {
             const c = try pickUnsatisfiedClause();
@@ -1319,9 +1334,9 @@ fn checkOriginalClausesSatisfied() !void {
         } else {
             try stderr.writer().print("babywalk: fatal error: original clause[{d}] at line {d} unsatisfied:\n", .{ id + 1, original_lineno.items[id] });
             for (start_of_last_clause..i) |j| {
-                try stderr.writer().print("{d} ", .{original_literals[j]});
+                try stderr.writer().print("{d} ", .{original_literals.items[j]});
             }
-            try stderr.writer().print("\n");
+            try stderr.writeAll("\n");
             return error.FatalError;
         }
     }
