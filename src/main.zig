@@ -149,7 +149,7 @@ var stats = struct {
 
 // For debugging mode
 var start_of_clause_lineno: u64 = 0;
-// TODO: only initialize them when in debugging is on
+// TODO: only initialize them when in debugging is on?
 var original_literals = ArrayList(i64).init(allocator);
 var original_lineno = ArrayList(u64).init(allocator);
 
@@ -401,7 +401,7 @@ fn expectDigit(ch: u8) !void {
 }
 
 fn parse() !void {
-    const start = toSeconds(std.time.microTimestamp());
+    const start = getTimeInSeconds();
 
     if (!input_path_seen or std.mem.eql(u8, input_path, "-")) {
         input_file = stdin.reader();
@@ -586,11 +586,12 @@ fn parse() !void {
         return error.ParseError;
     }
 
-    try message("parsed {d} clauses in {d:.2} seconds", .{ stats.parsed, toSeconds(std.time.microTimestamp()) - start }); // FIXME: time broken
+    try message("parsed {d} clauses in {d:.2} seconds", .{ stats.parsed, getTimeInSeconds() - start });
 }
 
-fn toSeconds(tm: i64) f64 {
-    return @as(f64, @floatFromInt(tm)) / 1000;
+fn getTimeInSeconds() f64 {
+    const tm = std.time.microTimestamp();
+    return @as(f64, @floatFromInt(tm)) / std.time.us_per_s;
 }
 
 fn propagate() !bool {
@@ -1352,7 +1353,7 @@ fn percent(a: anytype, b: anytype) f64 {
 
 fn report() !void {
     if (verbosity < 0) return;
-    const elapsed = toSeconds(std.time.microTimestamp()) - start_time;
+    const elapsed = getTimeInSeconds() - start_time;
     try stdout.writer().print("c {s: <21} {d:13} {d:14.2} flipped/restart\n", .{ "restarts:", stats.restarts, average(stats.flipped, stats.restarts) });
     try stdout.writer().print("c {s: <21} {d:13} {d:14.2} per second\n", .{ "flipped-variables:", stats.flipped, @as(f64, @floatFromInt(stats.flipped)) / elapsed });
     try stdout.writer().print("c {s: <21} {d:13} {d:14.2} % flipped\n", .{ "random-walks:", stats.random_walks, percent(stats.random_walks, stats.flipped) });
@@ -1371,7 +1372,7 @@ fn goodbye(result: u8) !void {
 }
 
 pub fn main() !u8 {
-    start_time = toSeconds(std.time.microTimestamp());
+    start_time = getTimeInSeconds();
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
     options(args) catch |err| switch (err) {
