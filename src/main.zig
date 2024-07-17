@@ -770,10 +770,7 @@ fn simplify() !void {
         try list.resize(0);
     }
     const begin: [*]*clause = clauses.items.ptr;
-    var end: [*]*clause = clauses.items.ptr + clauses.items.len - 1;
-    if (clauses.items.len == 0) {
-        end = clauses.items.ptr;
-    } // Above formula does not work for 0-size
+    const end: [*]*clause = clauses.items.ptr + clauses.items.len;
     var j = begin;
     var i = j;
     continue_with_next_clause: while (i != end) {
@@ -955,7 +952,7 @@ fn makeClausesAlongUnsatisfied(lit: i64) !void {
     var made: usize = 0;
     var visited: usize = 0;
     const begin = unsatisfied.items.ptr;
-    const end = unsatisfied.items.ptr + unsatisfied.items.len - 1;
+    const end = unsatisfied.items.ptr + unsatisfied.items.len;
     var j = begin;
     var i = j;
     while (i != end) {
@@ -966,14 +963,14 @@ fn makeClausesAlongUnsatisfied(lit: i64) !void {
             try makeClause(c);
             made += 1;
         } else if (i != j) {
-            c.pos = (@intFromPtr(j) - @intFromPtr(begin)) / @sizeOf(clause);
+            c.pos = (@intFromPtr(j) - @intFromPtr(begin)) / @sizeOf(*clause);
             j[0] = c;
             j += 1;
         } else {
             j += 1;
         }
     }
-    try unsatisfied.resize((@intFromPtr(j) - @intFromPtr(begin)) / @sizeOf(clause));
+    try unsatisfied.resize((@intFromPtr(j) - @intFromPtr(begin)) / @sizeOf(*clause));
     stats.made_clauses += made;
     stats.make_visited += visited;
     try log("made {d} clauses with flipped {d}", .{ made, lit });
