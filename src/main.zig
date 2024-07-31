@@ -23,8 +23,8 @@ const usage =
     \\  -l  enable logging for debugging
     \\  --random   random literal algorithm
     \\  --focused  focused random walk algorithm
-    \\  --walksat  WalkSAT algorithm (not implemented)
-    \\  --probsat  ProbSAT algorithm (not implemented)
+    \\  --walksat  WalkSAT algorithm
+    \\  --probsat  ProbSAT algorithm
     \\
     \\  -f <flips>        limit total number of flips
     \\  -s <seed>         use '<seed>' to initialize random number generator
@@ -1186,11 +1186,13 @@ fn breakValue(lit: i64, max: usize) !usize {
     return res;
 }
 
+/// Returns a random number in the range [0, 1]
 fn nextDoubleInclusive() f64 {
     const res = @as(f64, @floatFromInt(next32())) / 4294967295.0;
     return res;
 }
 
+/// Returns a random number in the range [0, 1)
 fn nextDoubleExclusive() f64 {
     const res = @as(f64, @floatFromInt(next32())) / 4294967296.0;
     return res;
