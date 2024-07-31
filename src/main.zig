@@ -1191,6 +1191,11 @@ fn nextDoubleInclusive() f64 {
     return res;
 }
 
+fn nextDoubleExclusive() f64 {
+    const res = @as(f64, @floatFromInt(next32())) / 4294967296.0;
+    return res;
+}
+
 fn selectLiteralInUnsatisfiedClause(cls: *clause) !i64 {
     var min_break_value = @as(u64, @intCast(invalid_break_value));
     for (cls.literals) |lit| {
@@ -1220,16 +1225,63 @@ fn selectLiteralInUnsatisfiedClause(cls: *clause) !i64 {
 
 fn probsat() !void {
     try message("using ProbSAT algorithm", .{});
+    try initializeTable();
     try restart();
     while (unsatisfied.items.len != 0 and stats.flipped < limit and !terminate) {
         const c = try pickUnsatisfiedClause();
-        const lit = sampleLiteralInUnsatisfiedClause(c);
+        const lit = try sampleLiteralInUnsatisfiedClause(c);
         try flipLiteral(lit);
     }
 }
 
-fn sampleLiteralInUnsatisfiedClause(cls: *clause) i64 {
-    return cls.literals[0]; // TODO+ implement ProbSAT sampling
+var table = ArrayList(f64).init(allocator);
+var table_epsilon: f64 = 0;
+
+fn initializeTable() !void {
+    var n: f64 = 1;
+    while (n != 0) {
+        try table.append(n);
+        n *= 0.5;
+    }
+    assert(table.items.len != 0);
+    table_epsilon = table.items[table.items.len - 1];
+    try verbose(1, "initialized table of size {d} epsilon {d}", .{ table.items.len, table_epsilon });
+}
+
+fn sampleScore(lit: i64) !f64 {
+    assert(values[lit2Idx(lit)] < 0);
+    const b = try breakValue(-lit, std.math.maxInt(usize));
+    const res: f64 = if (b < table.items.len) table.items[b] else table_epsilon;
+    try log("sample score {d} of {d} with capped break value {d}", .{ res, lit, b });
+    return res;
+}
+
+var scores = ArrayList(f64).init(allocator);
+
+fn sampleLiteralInUnsatisfiedClause(cls: *clause) !i64 {
+    var sum: f64 = 0;
+    try scores.resize(0);
+    for (cls.literals) |lit| {
+        const score = try sampleScore(lit);
+        try scores.append(score);
+        sum += score;
+    }
+    const sampled = sum * nextDoubleExclusive();
+    try log("sampled {d} {d:.2}% of sum {d}", .{ sampled, percentF(sampled, sum), sum });
+    assert(sampled != sum);
+    sum = 0;
+    var res: i64 = 0;
+    for (0..cls.literals.len) |i| {
+        const lit = cls.literals[i];
+        const score = scores.items[i];
+        sum += score;
+        if (sum >= sampled) {
+            res = lit;
+            break;
+        }
+    }
+    assert(res != 0);
+    return res;
 }
 
 fn solve() !u8 {
@@ -1356,27 +1408,42 @@ fn checkOriginalClausesSatisfied() !void {
     }
 }
 
-fn average(a: anytype, b: anytype) f64 {
+/// For integers
+fn averageI(a: anytype, b: anytype) f64 {
     if (b == 0) {
         return 0;
     }
     return @as(f64, @floatFromInt(a)) / @as(f64, @floatFromInt(b));
 }
 
-fn percent(a: anytype, b: anytype) f64 {
-    return average(100 * a, b);
+/// For integers
+fn percentI(a: anytype, b: anytype) f64 {
+    return averageI(100 * a, b);
+}
+
+/// For floating point numbers
+fn averageF(a: anytype, b: anytype) f64 {
+    if (b == 0) {
+        return 0;
+    }
+    return @as(f64, a) / @as(f64, b);
+}
+
+/// For floating point numbers
+fn percentF(a: anytype, b: anytype) f64 {
+    return averageF(100 * a, b);
 }
 
 fn report() !void {
     if (verbosity < 0) return;
     const elapsed = getTimeInSeconds() - start_time;
-    try stdout.writer().print("c {s: <21} {d:13} {d:14.2} flipped/restart\n", .{ "restarts:", stats.restarts, average(stats.flipped, stats.restarts) });
+    try stdout.writer().print("c {s: <21} {d:13} {d:14.2} flipped/restart\n", .{ "restarts:", stats.restarts, averageI(stats.flipped, stats.restarts) });
     try stdout.writer().print("c {s: <21} {d:13} {d:14.2} per second\n", .{ "flipped-variables:", stats.flipped, @as(f64, @floatFromInt(stats.flipped)) / elapsed });
-    try stdout.writer().print("c {s: <21} {d:13} {d:14.2} % flipped\n", .{ "random-walks:", stats.random_walks, percent(stats.random_walks, stats.flipped) });
-    try stdout.writer().print("c {s: <21} {d:13} {d:14.2} per flip\n", .{ "made-clauses:", stats.made_clauses, average(stats.made_clauses, stats.flipped) });
-    try stdout.writer().print("c {s: <21} {d:13} {d:14.2} per flip\n", .{ "make-visited:", stats.make_visited, average(stats.make_visited, stats.flipped) });
-    try stdout.writer().print("c {s: <21} {d:13} {d:14.2} per flip\n", .{ "broken-clauses:", stats.broken_clauses, average(stats.broken_clauses, stats.flipped) });
-    try stdout.writer().print("c {s: <21} {d:13} {d:14.2} per flip\n", .{ "break-visited:", stats.break_visited, average(stats.break_visited, stats.flipped) });
+    try stdout.writer().print("c {s: <21} {d:13} {d:14.2} % flipped\n", .{ "random-walks:", stats.random_walks, percentI(stats.random_walks, stats.flipped) });
+    try stdout.writer().print("c {s: <21} {d:13} {d:14.2} per flip\n", .{ "made-clauses:", stats.made_clauses, averageI(stats.made_clauses, stats.flipped) });
+    try stdout.writer().print("c {s: <21} {d:13} {d:14.2} per flip\n", .{ "make-visited:", stats.make_visited, averageI(stats.make_visited, stats.flipped) });
+    try stdout.writer().print("c {s: <21} {d:13} {d:14.2} per flip\n", .{ "broken-clauses:", stats.broken_clauses, averageI(stats.broken_clauses, stats.flipped) });
+    try stdout.writer().print("c {s: <21} {d:13} {d:14.2} per flip\n", .{ "break-visited:", stats.break_visited, averageI(stats.break_visited, stats.flipped) });
     try stdout.writer().print("c {s: <21} {d:28.2} seconds\n", .{ "process-time:", elapsed });
 }
 
