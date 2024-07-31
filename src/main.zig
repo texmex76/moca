@@ -149,7 +149,6 @@ var stats = struct {
 
 // For debugging mode
 var start_of_clause_lineno: u64 = 0;
-// TODO: only initialize them when in debugging is on?
 var original_literals = ArrayList(i64).init(allocator);
 var original_lineno = ArrayList(u64).init(allocator);
 
@@ -695,6 +694,23 @@ fn logClause(cls: *const []i64, msg: anytype) !void {
     }
 }
 
+/// Same as `logClause`, but with an extra argument for formatting the message
+fn logClause2(cls: *const []i64, comptime format: []const u8, args: anytype) !void {
+    const text_size = std.fmt.count(format, .{args});
+    const buf = try allocator.alloc(u8, text_size);
+    defer allocator.free(buf);
+    _ = try std.fmt.bufPrint(buf, format, .{args});
+    if (debug) {
+        if (verbosity == std.math.maxInt(i32)) {
+            try stdout.writer().print("c LOG {s} ", .{buf});
+            for (cls.*) |lit| {
+                try stdout.writer().print("{d} ", .{lit});
+            }
+            try stdout.writeAll("\n");
+        }
+    }
+}
+
 fn log(comptime fmt: []const u8, args: anytype) !void {
     if (debug) {
         if (verbosity == std.math.maxInt(i32)) {
@@ -1112,7 +1128,7 @@ fn pickUnsatisfiedClause() !*clause {
         next_unsatisfied = 1;
     }
     const res = unsatisfied.items[pos];
-    try logClause(&res.literals, "picked at position {d}"); // TODO: insert res for {d}
+    try logClause2(&res.literals, "picked at position {d}", res.pos);
     return res;
 }
 
@@ -1186,7 +1202,7 @@ fn selectLiteralInUnsatisfiedClause(cls: *clause) !i64 {
         }
         try min_break_value_literals.append(lit);
     }
-    try logClause(&cls.literals, "minimum break value {d} in"); // TODO: min_break_value
+    try logClause2(&cls.literals, "minimum break value {d} in", min_break_value);
     if (min_break_value != 0) {
         const p = nextDoubleInclusive();
         if (p < 0.57) { // Magic constant!
