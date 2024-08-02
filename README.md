@@ -1,3 +1,3 @@
-# babywalk-zig
+# moca
 
-Attempt to port babywalk to the Zig programming language.
+Local search SAT solving using monte carlo tree search.

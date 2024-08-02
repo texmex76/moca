@@ -7,7 +7,7 @@ die () {
 
 cd `dirname $0`/..
 
-for need in babywalk checkmodel
+for need in zig-out/bin/moca checkmodel
 do
   [ -f $need ] || die "could not find '$need' (build first)"
 done
@@ -22,8 +22,8 @@ run () {
   err=$dir/$name.err
   chm=$dir/$name.chm
   rm -f $log $err $chm
-  echo "./babywalk $cnf $out"
-  ./babywalk $cnf 1>$log 2>$err
+  echo "zig-out/bin/moca $cnf $out"
+  zig-out/bin/moca $cnf 1>$log 2>$err
   status=$?
   [ $status = $expected ] || \
     die "simplification failed:" \

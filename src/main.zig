@@ -1509,3 +1509,60 @@ pub fn main() !u8 {
     try goodbye(res);
     return res;
 }
+
+fn writeToFile(comptime fmt: []const u8, args: anytype) !void {
+    const tmp = try allocator.alloc(u8, std.fmt.count(fmt, args));
+    defer allocator.free(tmp);
+    _ = try std.fmt.bufPrint(tmp, fmt, args);
+    const handle = try std.fs.cwd().createFile("testy", .{
+        .truncate = false,
+    });
+    defer handle.close();
+    _ = try handle.write(tmp);
+}
+
+fn runTest(expected: u8, filename: []const u8) !void {
+    const cnf_name_buf = try allocator.alloc(u8, std.fmt.count("test/{s}.cnf", .{filename}));
+    defer allocator.free(cnf_name_buf);
+    _ = try std.fmt.bufPrint(cnf_name_buf, "test/{s}.cnf", .{filename});
+
+    const log_name_buf = try allocator.alloc(u8, std.fmt.count("test/{s}.log", .{filename}));
+    defer allocator.free(log_name_buf);
+    _ = try std.fmt.bufPrint(log_name_buf, "test/{s}.log", .{filename});
+
+    const err_name_buf = try allocator.alloc(u8, std.fmt.count("test/{s}.err", .{filename}));
+    defer allocator.free(err_name_buf);
+    _ = try std.fmt.bufPrint(err_name_buf, "test/{s}.err", .{filename});
+
+    const log_name_cmd_buf = try allocator.alloc(u8, std.fmt.count("1>{s}", .{
+        log_name_buf,
+    }));
+    defer allocator.free(log_name_cmd_buf);
+    _ = try std.fmt.bufPrint(log_name_cmd_buf, "1>{s}", .{log_name_buf});
+
+    const err_name_cmd_buf = try allocator.alloc(u8, std.fmt.count("2>{s}", .{err_name_buf}));
+    defer allocator.free(err_name_cmd_buf);
+    _ = try std.fmt.bufPrint(err_name_cmd_buf, "2>{s}", .{err_name_buf});
+
+    // TODO: remove log_name_cmd_buf and err_name_cmd_buf from argv because this way they
+    // are all given to the SAT solver
+    const argv = [_][]const u8{ "zig-out/bin/moca", cnf_name_buf, log_name_cmd_buf, err_name_cmd_buf };
+
+    const proc = try std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = &argv,
+    });
+
+    defer allocator.free(proc.stdout);
+    defer allocator.free(proc.stderr);
+    std.debug.print("hi", .{});
+    // try writeToFile("stdout: {s}\n", .{proc.stdout});
+    try writeToFile("stderr: {s}\n", .{proc.stderr});
+
+    // if (proc.term.Exited != expected) return error.SATSolverWrongReturnCode;
+    _ = expected;
+}
+
+test "hello" {
+    try runTest(10, "true");
+}
