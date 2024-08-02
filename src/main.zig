@@ -112,8 +112,8 @@ var algorithm = algorithm_type.walksat_algorithm;
 // Parsing state
 var input_path: []const u8 = undefined;
 var input_path_seen = false;
-var file: std.fs.File = undefined;
-var input_file: std.fs.File.Reader = undefined;
+// var file: std.fs.File = undefined;
+// var input_file: std.fs.File.Reader = undefined;
 var lineno: u64 = 1;
 
 // Global Flags
@@ -378,7 +378,7 @@ fn hasSuffix(str: []const u8, suffix: []const u8) bool {
     return k >= l and std.mem.eql(u8, str[(k - l)..k], suffix);
 }
 
-fn next() !u8 {
+fn next(input_file: anytype) !u8 {
     var ch = input_file.readByte() catch 0;
     if (ch == '\r') {
         ch = input_file.readByte() catch 0;
@@ -399,32 +399,50 @@ fn expectDigit(ch: u8) !void {
     }
 }
 
-fn parse() !void {
-    const start = getTimeInSeconds();
-
+fn selectReaderAndParse() !void {
     if (!input_path_seen or std.mem.eql(u8, input_path, "-")) {
-        input_file = stdin.reader();
+        const reader = stdin.reader();
         input_path = "<stdin>";
+        try parse(reader);
     } else if (hasSuffix(input_path, ".bz2")) {
         try stderr.writeAll("bzip2 not supported. sorry.\n");
-        return error.UnsupportedInputFormat; // TODO: support bzip2
+        return error.UnsupportedInputFormat;
     } else if (hasSuffix(input_path, ".gz")) {
-        try stderr.writeAll("gz not supported. sorry.\n");
-        return error.UnsupportedInputFormat; // TODO: support gz
+        const file = try std.fs.cwd().openFile(input_path, .{});
+        defer file.close();
+        var gzip_decompressor = std.compress.gzip.decompressor(file.reader());
+        const reader = gzip_decompressor.reader();
+        try parse(reader);
+    } else if (hasSuffix(input_path, ".zst")) {
+        const file = try std.fs.cwd().openFile(input_path, .{});
+        defer file.close();
+        const buf = try allocator.alloc(u8, std.compress.zstd.DecompressorOptions.default_window_buffer_len);
+        defer allocator.free(buf);
+        const zstd_otps = std.compress.zstd.DecompressorOptions{ .verify_checksum = true, .window_buffer = buf };
+        var zstd_decompressor = std.compress.zstd.decompressor(file.reader(), zstd_otps);
+        const reader = zstd_decompressor.reader();
+        try parse(reader);
     } else if (hasSuffix(input_path, ".xz")) {
-        try stderr.writeAll("xz not supported. sorry.\n");
-        return error.UnsupportedInputFormat; // TODO: support xz
+        const file = try std.fs.cwd().openFile(input_path, .{});
+        defer file.close();
+        var xz_decompressor = try std.compress.xz.decompress(allocator, file.reader());
+        const reader = xz_decompressor.reader();
+        try parse(reader);
     } else {
-        file = try std.fs.cwd().openFile(input_path, .{});
-        input_file = file.reader();
+        const file = try std.fs.cwd().openFile(input_path, .{});
+        defer file.close();
+        const reader = file.reader();
+        try parse(reader);
     }
-    defer file.close();
+}
 
+fn parse(reader: anytype) !void {
+    const start = getTimeInSeconds();
     try message("reading from '{s}'", .{input_path});
 
-    var ch = try next();
-    while (ch == 'c') : (ch = try next()) {
-        while (ch != '\n') : (ch = try next()) {
+    var ch = try next(reader);
+    while (ch == 'c') : (ch = try next(reader)) {
+        while (ch != '\n') : (ch = try next(reader)) {
             if (ch == 0) {
                 try stderr.writeAll("unexpected end-of-file in comment\n");
                 return error.ParseError;
@@ -441,16 +459,16 @@ fn parse() !void {
     while (p.len > 0) {
         const c = p[0];
         p = p[1..];
-        if (c != try next()) {
+        if (c != try next(reader)) {
             try stderr.writeAll("invalid header\n");
             return error.ParseError;
         }
     }
-    ch = try next();
+    ch = try next(reader);
     try expectDigit(ch);
     variables = ch - '0';
-    ch = try next();
-    while (std.ascii.isDigit(ch)) : (ch = try next()) {
+    ch = try next(reader);
+    while (std.ascii.isDigit(ch)) : (ch = try next(reader)) {
         if (std.math.maxInt(i64) / 10 < variables) {
             try stderr.writeAll("too many variables specified in header");
             return error.ParseError;
@@ -467,11 +485,11 @@ fn parse() !void {
         try stderr.writeAll("extected white space");
         return error.ParseError;
     }
-    ch = try next();
+    ch = try next(reader);
     try expectDigit(ch);
     var expected: i64 = ch - '0';
-    ch = try next();
-    while (std.ascii.isDigit(ch)) : (ch = try next()) {
+    ch = try next(reader);
+    while (std.ascii.isDigit(ch)) : (ch = try next(reader)) {
         if (std.math.maxInt(i64) / 10 < expected) {
             try stderr.writeAll("too many clauses specified in header");
             return error.ParseError;
@@ -495,12 +513,12 @@ fn parse() !void {
         start_of_clause_lineno = 0;
     }
     while (true) {
-        ch = try next();
+        ch = try next(reader);
         if (ch == ' ' or ch == '\n') continue;
         if (ch == 0) break;
         var sign: i2 = 1;
         if (ch == '-') {
-            ch = try next();
+            ch = try next(reader);
             sign = -1;
         }
         try expectDigit(ch);
@@ -512,8 +530,8 @@ fn parse() !void {
             return error.ParseError;
         }
         lit = ch - '0';
-        ch = try next();
-        while (std.ascii.isDigit(ch)) : (ch = try next()) {
+        ch = try next(reader);
+        while (std.ascii.isDigit(ch)) : (ch = try next(reader)) {
             if (std.math.maxInt(i64) / 10 < lit) {
                 try stderr.writeAll("literal too large\n");
                 return error.ParseError;
@@ -1466,7 +1484,7 @@ pub fn main() !u8 {
     };
     try banner();
     init();
-    try parse();
+    try selectReaderAndParse();
     defer {
         for (clauses.items) |c| {
             allocator.free(c.literals);

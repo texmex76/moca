@@ -5,3 +5,6 @@ babywalk
 checkmodel
 generate
 log
+*.gz
+*.xz
+*.zst
