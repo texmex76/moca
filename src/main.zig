@@ -429,6 +429,7 @@ fn selectReaderAndParse() !void {
         const file = try std.fs.cwd().openFile(input_path, .{});
         defer file.close();
         var xz_decompressor = try std.compress.xz.decompress(allocator, file.reader());
+        defer xz_decompressor.deinit();
         const reader = xz_decompressor.reader();
         try parse(reader);
     } else {
@@ -588,7 +589,8 @@ fn parse(reader: anytype) !void {
                         try verbose(1, "root-level propagation yields conflict", .{});
                         assert(found_empty_clause);
                     }
-                    allocator.free(c.literals);
+                    allocator.free(c.literals); // TODO: ??
+                    allocator.destroy(c);
                 }
             }
             unsimplified.shrinkRetainingCapacity(0);
@@ -800,6 +802,7 @@ fn initializeVariables() !void {
 fn deleteClause(cls: *clause) !void {
     try logClause(&cls.literals, "delete");
     allocator.free(cls.literals);
+    allocator.destroy(cls);
 }
 
 fn simplify() !void {
@@ -1491,20 +1494,27 @@ pub fn main() !u8 {
     defer {
         for (clauses.items) |c| {
             allocator.free(c.literals);
+            allocator.destroy(c);
         }
         clauses.deinit();
-        for (occurrences) |*occ| {
+        for (occurrences) |occ| {
             occ.deinit();
         }
+        table.deinit();
+        scores.deinit();
         allocator.free(occurrences);
         allocator.free(marks);
         allocator.free(values);
         allocator.free(forced);
+        trail.deinit();
         simplified.deinit();
         unsimplified.deinit();
         original_literals.deinit();
         original_lineno.deinit();
         min_break_value_literals.deinit();
+        unsatisfied.deinit();
+        original_literals.deinit();
+        original_lineno.deinit();
     }
     try simplify();
     const res = try solve();
