@@ -578,10 +578,6 @@ fn parse(reader: anytype) !void {
                     try logClause(&simplified.items, "simplified", .{});
                 }
                 var c = try newClause(&simplified);
-                if (c.literals.len > 1) {
-                    try clauses.append(c);
-                    try connectClause(c);
-                }
                 const size = c.literals.len;
                 if (size == 0) {
                     assert(!found_empty_clause);
@@ -591,7 +587,7 @@ fn parse(reader: anytype) !void {
                     const unit = c.literals[0];
                     try logClause(&c.literals, "found unit", .{});
                     try rootLevelAssign(unit, c);
-                    const ok = try propagate();
+                    const ok = try rootLevelPropagate();
                     if (!ok) {
                         try verbose(1, "root-level propagation yields conflict", .{});
                         assert(found_empty_clause);
@@ -623,27 +619,72 @@ fn getTimeInSeconds() f64 {
     return @as(f64, @floatFromInt(tm)) / std.time.us_per_s;
 }
 
-fn propagate() !bool {
+fn rootLevelPropagate() !bool {
     assert(!found_empty_clause);
-    while (propagated != trail.items.len) : (propagated += 1) {
+    while (propagated != trail.items.len) {
         const lit = trail.items[propagated];
-        try log("propagating {d}", .{lit});
-        next_clause: for (occurrences[lit2Idx(-lit)].items) |c| {
-            var unit: i64 = 0;
-            for (c.literals) |other| {
-                const value = values[lit2Idx(other)];
-                if (value < 0) continue;
-                if (value > 0) continue :next_clause;
-                if (unit != 0) continue :next_clause;
-                unit = other;
+        propagated += 1;
+        try log("root-level propagating {d}", .{lit});
+        const not_lit = -lit;
+        var ws = watches[lit2Idx(not_lit)];
+        const begin = ws.items.ptr;
+        const end = ws.items.ptr + ws.items.len;
+        var i = begin;
+        var j = i;
+        while (i != end) {
+            j[0] = i[0];
+            i += 1;
+            const w = j[0];
+            j += 1;
+            const blocking = w.blocking;
+            const blocking_value = values[lit2Idx(blocking)];
+            if (blocking_value > 0) continue;
+            const c = w.clause;
+            if (w.binary) {
+                if (blocking_value < 0) {
+                    try logClause(c.literals, "root-level conflicting", .{});
+                    return false;
+                } else {
+                    rootLevelAssign(blocking, c);
+                }
+            } else {
+                assert(c.literals.len > 1);
+                const literals = c.literals;
+                const other = literals[0] ^ literals[1] ^ not_lit;
+                const other_value = values[lit2Idx(other)];
+                if (other_value > 0) {
+                    j[-1].blocking = other;
+                    continue;
+                }
+                var replacement: i64 = 0;
+                var replacement_value: i2 = -1;
+                var r = literals.ptr + 2;
+                const end_literals = literals.ptr + literals.len;
+                while (r != end_literals) : (r += 1) {
+                    replacement = r[0];
+                    replacement_value = values[lit2Idx(replacement)];
+                    if (replacement_value >= 0) break;
+                }
+                if (replacement_value >= 0) {
+                    try logClause(c.literals, "unwatching {d}", .{not_lit});
+                    literals[0] = other;
+                    literals[1] = replacement;
+                    r[0] = not_lit;
+                    try watchLiteral(replacement, other, c);
+                } else if (other_value != 0) {
+                    try logClause(c, "root-level conflicting", .{});
+                    return false;
+                } else {
+                    rootLevelAssign(other, c);
+                }
             }
-            if (unit == 0) {
-                try logClause(&c.literals, "conflicting", .{});
-                found_empty_clause = true;
-                return false;
-            }
-            try rootLevelAssign(unit, c);
         }
+        while (i != end) {
+            j[0] = i[0];
+            i += 1;
+            j += 1;
+        }
+        try ws.resize((@intFromPtr(j) - @intFromPtr(begin)) / @sizeOf(*watch));
     }
     return true;
 }
@@ -697,6 +738,11 @@ fn newClause(literals: *ArrayList(i64)) !*clause {
     cls.id = stats.added;
     cls.pos = invalid_position;
     cls.literals = lits;
+    if (cls.literals.len > 1) {
+        try clauses.append(cls);
+        try connectClause(cls);
+        try watchTwoNonFalseLiteralsInClause(cls);
+    }
     return cls;
 }
 
@@ -708,11 +754,42 @@ fn newWatch(binary: bool, blocking: i64, cls: *clause) !*watch {
     return wtch;
 }
 
+fn watchLiteral(lit: i64, blocking: i64, cls: *clause) !void {
+    try logClause(&cls.literals, "watching {d} with blocking literal {d} in", .{ lit, blocking });
+    var ws = watches[lit2Idx(lit)];
+    for (ws.items) |w| {
+        assert(w.clause != cls);
+    }
+    const wtch = try newWatch(cls.literals.len == 2, blocking, cls);
+    try ws.append(wtch);
+}
+
+fn watchTwoNonFalseLiteralsInClause(cls: *clause) !void {
+    assert(cls.literals.len > 1);
+    try watchLiteral(cls.literals[0], cls.literals[1], cls);
+    try watchLiteral(cls.literals[1], cls.literals[0], cls);
+}
+
+fn watchSatisfiedLiteral(lit: i64, cls: *clause) !void {
+    assert(values[lit2Idx(lit)] > 0);
+    assert(cls.literals.len > 1);
+    const literals = cls.literals.ptr;
+    const end = cls.literals.ptr + cls.literals.len;
+    var l = literals;
+    while (assert(l != end) and l.* != lit) {
+        l += 1;
+    }
+    l.* = literals.*;
+    literals.* = lit;
+    const blocking = literals[1];
+    try watchLiteral(lit, blocking, cls);
+}
+
 fn logClause(cls: *const []i64, comptime format: []const u8, args: anytype) !void {
-    const buf = try allocator.alloc(u8, std.fmt.count(format, args));
-    defer allocator.free(buf);
-    _ = try std.fmt.bufPrint(buf, format, args);
     if (debug) {
+        const buf = try allocator.alloc(u8, std.fmt.count(format, args));
+        defer allocator.free(buf);
+        _ = try std.fmt.bufPrint(buf, format, args);
         if (verbosity == std.math.maxInt(i32)) {
             try stdout.writer().print("c LOG {s} ", .{buf});
             for (cls.*) |lit| {
