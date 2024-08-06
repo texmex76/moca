@@ -64,6 +64,7 @@ var variables: i64 = 0;
 var found_empty_clause: bool = false;
 var clauses = ArrayList(*clause).init(allocator);
 var occurrences: []ArrayList(*clause) = undefined;
+var watches: []ArrayList(*watch) = undefined;
 
 // Part of the state needed for parsing and unit propagation
 var simplified = ArrayList(i64).init(allocator);
@@ -161,6 +162,12 @@ const clause = struct {
         for (self.literals) |lit| try stdout.writer().print("{d} ", .{lit});
         try stdout.writeAll("0\n");
     }
+};
+
+const watch = struct {
+    binary: bool,
+    blocking: i64,
+    clause: *clause,
 };
 
 fn options(args: [][:0]u8) !void {
@@ -564,11 +571,11 @@ fn parse(reader: anytype) !void {
             try unsimplified.append(lit);
         } else {
             stats.parsed += 1;
-            try logClause(&unsimplified.items, "parsed");
+            try logClause(&unsimplified.items, "parsed", .{});
             if (!found_empty_clause and !tautologicalClause(&unsimplified)) {
                 const did_simplify = try simplifyClause(&simplified, &unsimplified);
                 if (did_simplify) {
-                    try logClause(&simplified.items, "simplified");
+                    try logClause(&simplified.items, "simplified", .{});
                 }
                 var c = try newClause(&simplified);
                 if (c.literals.len > 1) {
@@ -582,14 +589,14 @@ fn parse(reader: anytype) !void {
                     found_empty_clause = true;
                 } else if (size == 1) {
                     const unit = c.literals[0];
-                    try logClause(&c.literals, "found unit");
+                    try logClause(&c.literals, "found unit", .{});
                     try rootLevelAssign(unit, c);
                     const ok = try propagate();
                     if (!ok) {
                         try verbose(1, "root-level propagation yields conflict", .{});
                         assert(found_empty_clause);
                     }
-                    allocator.free(c.literals); // TODO: ??
+                    allocator.free(c.literals);
                     allocator.destroy(c);
                 }
             }
@@ -631,7 +638,7 @@ fn propagate() !bool {
                 unit = other;
             }
             if (unit == 0) {
-                try logClause(&c.literals, "conflicting");
+                try logClause(&c.literals, "conflicting", .{});
                 found_empty_clause = true;
                 return false;
             }
@@ -642,7 +649,7 @@ fn propagate() !bool {
 }
 
 fn rootLevelAssign(lit: i64, reason: *const clause) !void {
-    try logClauseAndLit(&reason.literals, lit, "assign with reason");
+    try logClause(&reason.literals, "assign with reason: {d}", .{lit});
     assert(values[lit2Idx(lit)] == 0);
     assert(values[lit2Idx(-lit)] == 0);
     values[lit2Idx(lit)] = 1;
@@ -665,7 +672,7 @@ fn checkSimplified(cls: *ArrayList(i64)) void {
 
 fn connectLiteral(lit: i64, cls: *clause) !void {
     assert(cls.literals.len > 1);
-    try logClauseAndLit(&cls.literals, lit, "connectLiteral");
+    try logClause(&cls.literals, "connectLiteral: {d}", .{lit});
     try occurrences[lit2Idx(lit)].append(cls);
 }
 
@@ -684,7 +691,7 @@ fn newClause(literals: *ArrayList(i64)) !*clause {
     for (literals.items, 0..) |lit, idx| {
         lits[idx] = lit;
     }
-    try logClause(&lits, "new");
+    try logClause(&lits, "new", .{});
     stats.added += 1;
     var cls = try allocator.create(clause);
     cls.id = stats.added;
@@ -693,36 +700,18 @@ fn newClause(literals: *ArrayList(i64)) !*clause {
     return cls;
 }
 
-fn logClauseAndLit(cls: *const []i64, lit: i64, msg: anytype) !void {
-    if (debug) {
-        if (verbosity == std.math.maxInt(i32)) {
-            try stdout.writer().print("c LOG {s} l: {d} c: ", .{ msg, lit });
-            for (cls.*) |l| {
-                try stdout.writer().print("{d} ", .{l});
-            }
-            try stdout.writeAll("\n");
-        }
-    }
+fn newWatch(binary: bool, blocking: i64, cls: *clause) !*watch {
+    var wtch = try allocator.create(watch);
+    wtch.binary = binary;
+    wtch.blocking = blocking;
+    wtch.clause = cls;
+    return wtch;
 }
 
-fn logClause(cls: *const []i64, msg: anytype) !void {
-    if (debug) {
-        if (verbosity == std.math.maxInt(i32)) {
-            try stdout.writer().print("c LOG {s} ", .{msg});
-            for (cls.*) |lit| {
-                try stdout.writer().print("{d} ", .{lit});
-            }
-            try stdout.writeAll("\n");
-        }
-    }
-}
-
-/// Same as `logClause`, but with an extra argument for formatting the message
-fn logClause2(cls: *const []i64, comptime format: []const u8, args: anytype) !void {
-    const text_size = std.fmt.count(format, .{args});
-    const buf = try allocator.alloc(u8, text_size);
+fn logClause(cls: *const []i64, comptime format: []const u8, args: anytype) !void {
+    const buf = try allocator.alloc(u8, std.fmt.count(format, args));
     defer allocator.free(buf);
-    _ = try std.fmt.bufPrint(buf, format, .{args});
+    _ = try std.fmt.bufPrint(buf, format, args);
     if (debug) {
         if (verbosity == std.math.maxInt(i32)) {
             try stdout.writer().print("c LOG {s} ", .{buf});
@@ -791,6 +780,10 @@ fn initializeVariables() !void {
     for (occurrences) |*occ| {
         occ.* = ArrayList(*clause).init(allocator);
     }
+    watches = try allocator.alloc(ArrayList(*watch), 2 * v + 1);
+    for (watches) |*wtch_lst| {
+        wtch_lst.* = ArrayList(*watch).init(allocator);
+    }
     marks = try allocator.alloc(bool, 2 * v + 1);
     fill(bool, marks, false);
     values = try allocator.alloc(i2, 2 * v + 1);
@@ -800,7 +793,7 @@ fn initializeVariables() !void {
 }
 
 fn deleteClause(cls: *clause) !void {
-    try logClause(&cls.literals, "delete");
+    try logClause(&cls.literals, "delete", .{});
     allocator.free(cls.literals);
     allocator.destroy(cls);
 }
@@ -833,13 +826,13 @@ fn simplify() !void {
         new_size = simplified.items.len;
         assert(new_size > 1);
         if (new_size < c.literals.len) {
-            try logClause(&c.literals, "unsimplified");
+            try logClause(&c.literals, "unsimplified", .{});
             for (simplified.items, 0..) |lit, idx| {
                 c.literals[idx] = lit;
             }
             c.literals = try allocator.realloc(c.literals, new_size);
             assert(c.literals.len == new_size);
-            try logClause(&c.literals, "simplified");
+            try logClause(&c.literals, "simplified", .{});
         }
         try connectClause(c);
     }
@@ -974,7 +967,7 @@ fn makeClausesAlongOccurrences(lit: i64) !void {
 }
 
 fn makeClause(cls: *clause) !void {
-    try logClause(&cls.literals, "made");
+    try logClause(&cls.literals, "made", .{});
     cls.pos = invalid_position;
 }
 
@@ -1063,7 +1056,7 @@ fn satisfied(cls: *clause) bool {
 }
 
 fn breakClause(cls: *clause) !void {
-    try logClause(&cls.literals, "broken");
+    try logClause(&cls.literals, "broken", .{});
     cls.pos = unsatisfied.items.len;
     try unsatisfied.append(cls);
 }
@@ -1152,7 +1145,7 @@ fn pickUnsatisfiedClause() !*clause {
         next_unsatisfied = 1;
     }
     const res = unsatisfied.items[pos];
-    try logClause2(&res.literals, "picked at position {d}", res.pos);
+    try logClause(&res.literals, "picked at position {d}", .{res.pos});
     return res;
 }
 
@@ -1233,7 +1226,7 @@ fn selectLiteralInUnsatisfiedClause(cls: *clause) !i64 {
         }
         try min_break_value_literals.append(lit);
     }
-    try logClause2(&cls.literals, "minimum break value {d} in", min_break_value);
+    try logClause(&cls.literals, "minimum break value {d} in", .{min_break_value});
     if (min_break_value != 0) {
         const p = nextDoubleInclusive();
         if (p < 0.57) { // Magic constant!
@@ -1480,7 +1473,40 @@ fn goodbye(result: u8) !void {
     try message("exit {d}", .{result});
 }
 
+fn free() void {
+    for (clauses.items) |c| {
+        allocator.free(c.literals);
+        allocator.destroy(c);
+    }
+    clauses.deinit();
+    for (watches) |wtch_lst| {
+        for (wtch_lst.items) |wtch| {
+            allocator.destroy(wtch);
+        }
+        wtch_lst.deinit();
+    }
+    for (occurrences) |occ| {
+        occ.deinit();
+    }
+    table.deinit();
+    scores.deinit();
+    allocator.free(occurrences);
+    allocator.free(marks);
+    allocator.free(values);
+    allocator.free(forced);
+    trail.deinit();
+    simplified.deinit();
+    unsimplified.deinit();
+    original_literals.deinit();
+    original_lineno.deinit();
+    min_break_value_literals.deinit();
+    unsatisfied.deinit();
+    original_literals.deinit();
+    original_lineno.deinit();
+}
+
 pub fn main() !u8 {
+    defer free();
     start_time = getTimeInSeconds();
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
@@ -1491,31 +1517,6 @@ pub fn main() !u8 {
     try banner();
     init();
     try selectReaderAndParse();
-    defer {
-        for (clauses.items) |c| {
-            allocator.free(c.literals);
-            allocator.destroy(c);
-        }
-        clauses.deinit();
-        for (occurrences) |occ| {
-            occ.deinit();
-        }
-        table.deinit();
-        scores.deinit();
-        allocator.free(occurrences);
-        allocator.free(marks);
-        allocator.free(values);
-        allocator.free(forced);
-        trail.deinit();
-        simplified.deinit();
-        unsimplified.deinit();
-        original_literals.deinit();
-        original_lineno.deinit();
-        min_break_value_literals.deinit();
-        unsatisfied.deinit();
-        original_literals.deinit();
-        original_lineno.deinit();
-    }
     try simplify();
     const res = try solve();
     try report();
