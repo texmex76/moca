@@ -42,7 +42,7 @@ pub fn build(b: *std.Build) void {
     const run_check_step = b.step("check", "Run checkmodel");
     run_check_step.dependOn(&run_check_cmd.step);
 
-    // Checkmodel
+    // Generate
     const gen_exe = b.addExecutable(.{
         .name = "generate",
         .target = target,

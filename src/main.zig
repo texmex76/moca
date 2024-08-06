@@ -6,6 +6,7 @@ const stdin = std.io.getStdIn();
 const ArrayList = std.ArrayList;
 const assert = std.debug.assert;
 const debug = @import("config").debug;
+const expect = @import("std").testing.expect;
 
 // var gpa = std.heap.GeneralPurposeAllocator(.{}){};
 // const allocator = gpa.allocator();
@@ -378,10 +379,12 @@ fn hasSuffix(str: []const u8, suffix: []const u8) bool {
     return k >= l and std.mem.eql(u8, str[(k - l)..k], suffix);
 }
 
-fn next(input_file: anytype) !u8 {
-    var ch = input_file.readByte() catch 0;
+/// We specify `reader` to be `anytype` to accunt for many types of
+/// readers, compressed and uncompressed.
+fn next(reader: anytype) !u8 {
+    var ch = reader.readByte() catch 0;
     if (ch == '\r') {
-        ch = input_file.readByte() catch 0;
+        ch = reader.readByte() catch 0;
         if (ch != '\n') {
             try stderr.writeAll("expected new-line after carriage return\n");
             return error.NoNewLineAfterCarriageReturn;
@@ -1510,15 +1513,12 @@ pub fn main() !u8 {
     return res;
 }
 
-fn writeToFile(comptime fmt: []const u8, args: anytype) !void {
-    const tmp = try allocator.alloc(u8, std.fmt.count(fmt, args));
-    defer allocator.free(tmp);
-    _ = try std.fmt.bufPrint(tmp, fmt, args);
-    const handle = try std.fs.cwd().createFile("testy", .{
+fn writeToFile(filename: []const u8, contents: []const u8) !void {
+    const handle = try std.fs.cwd().createFile(filename, .{
         .truncate = false,
     });
     defer handle.close();
-    _ = try handle.write(tmp);
+    _ = try handle.write(contents);
 }
 
 fn runTest(expected: u8, filename: []const u8) !void {
@@ -1534,35 +1534,117 @@ fn runTest(expected: u8, filename: []const u8) !void {
     defer allocator.free(err_name_buf);
     _ = try std.fmt.bufPrint(err_name_buf, "test/{s}.err", .{filename});
 
-    const log_name_cmd_buf = try allocator.alloc(u8, std.fmt.count("1>{s}", .{
-        log_name_buf,
-    }));
-    defer allocator.free(log_name_cmd_buf);
-    _ = try std.fmt.bufPrint(log_name_cmd_buf, "1>{s}", .{log_name_buf});
+    const chm_name_buf = try allocator.alloc(u8, std.fmt.count("test/{s}.chm", .{filename}));
+    defer allocator.free(chm_name_buf);
+    _ = try std.fmt.bufPrint(chm_name_buf, "test/{s}.chm", .{filename});
 
-    const err_name_cmd_buf = try allocator.alloc(u8, std.fmt.count("2>{s}", .{err_name_buf}));
-    defer allocator.free(err_name_cmd_buf);
-    _ = try std.fmt.bufPrint(err_name_cmd_buf, "2>{s}", .{err_name_buf});
-
-    // TODO: remove log_name_cmd_buf and err_name_cmd_buf from argv because this way they
-    // are all given to the SAT solver
-    const argv = [_][]const u8{ "zig-out/bin/moca", cnf_name_buf, log_name_cmd_buf, err_name_cmd_buf };
-
+    const argv = [_][]const u8{ "zig-out/bin/moca", cnf_name_buf };
     const proc = try std.process.Child.run(.{
         .allocator = allocator,
         .argv = &argv,
     });
-
     defer allocator.free(proc.stdout);
     defer allocator.free(proc.stderr);
-    std.debug.print("hi", .{});
-    // try writeToFile("stdout: {s}\n", .{proc.stdout});
-    try writeToFile("stderr: {s}\n", .{proc.stderr});
 
-    // if (proc.term.Exited != expected) return error.SATSolverWrongReturnCode;
-    _ = expected;
+    try writeToFile(log_name_buf, proc.stdout);
+    try writeToFile(err_name_buf, proc.stderr);
+    if (proc.term.Exited != expected) return error.SATSolverWrongReturnCode;
+
+    if (expected == 10) {
+        const argv2 = [_][]const u8{ "zig-out/bin/checkmodel", cnf_name_buf, log_name_buf };
+        const proc2 = try std.process.Child.run(.{
+            .allocator = allocator,
+            .argv = &argv2,
+        });
+        defer allocator.free(proc2.stdout);
+        defer allocator.free(proc2.stderr);
+
+        try writeToFile(chm_name_buf, proc2.stdout);
+        try writeToFile(err_name_buf, proc2.stderr);
+        if (proc2.term.Exited != 0) return error.CheckmodelWrongReturnCode;
+    }
 }
 
-test "hello" {
+test "true" {
     try runTest(10, "true");
+}
+
+test "false" {
+    try runTest(20, "false");
+}
+
+test "trivial" {
+    try runTest(10, "trivial");
+}
+
+test "simp" {
+    try runTest(10, "simp");
+}
+
+test "unit1" {
+    try runTest(20, "unit1");
+}
+
+test "unit2" {
+    try runTest(20, "unit2");
+}
+
+test "unit3" {
+    try runTest(20, "unit3");
+}
+
+test "unit4" {
+    try runTest(20, "unit4");
+}
+
+test "unit5" {
+    try runTest(20, "unit5");
+}
+
+test "prime4" {
+    try runTest(10, "prime4");
+}
+
+test "prime9" {
+    try runTest(10, "prime9");
+}
+
+test "prime25" {
+    try runTest(10, "prime25");
+}
+
+test "prime49" {
+    try runTest(10, "prime49");
+}
+
+test "prime121" {
+    try runTest(10, "prime121");
+}
+
+test "prime169" {
+    try runTest(10, "prime169");
+}
+
+test "sqrt2809" {
+    try runTest(10, "sqrt2809");
+}
+
+test "sqrt3481" {
+    try runTest(10, "sqrt3481");
+}
+
+test "sqrt3721" {
+    try runTest(10, "sqrt3721");
+}
+
+test "sqrt4489" {
+    try runTest(10, "sqrt4489");
+}
+
+test "sqrt5041" {
+    try runTest(10, "sqrt5041");
+}
+
+test "sqrt5329" {
+    try runTest(10, "sqrt5329");
 }
