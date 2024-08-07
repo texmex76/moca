@@ -589,6 +589,7 @@ fn parse(reader: anytype) !void {
                     try rootLevelAssign(unit, c);
                     const ok = try rootLevelPropagate();
                     if (!ok) {
+                        found_empty_clause = true;
                         try verbose(1, "root-level propagation yields conflict", .{});
                         assert(found_empty_clause);
                     }
@@ -626,7 +627,7 @@ fn rootLevelPropagate() !bool {
         propagated += 1;
         try log("root-level propagating {d}", .{lit});
         const not_lit = -lit;
-        var ws = watches[lit2Idx(not_lit)];
+        var ws = &watches[lit2Idx(not_lit)];
         const begin = ws.items.ptr;
         const end = ws.items.ptr + ws.items.len;
         var i = begin;
@@ -642,10 +643,10 @@ fn rootLevelPropagate() !bool {
             const c = w.clause;
             if (w.binary) {
                 if (blocking_value < 0) {
-                    try logClause(c.literals, "root-level conflicting", .{});
+                    try logClause(&c.literals, "root-level conflicting", .{});
                     return false;
                 } else {
-                    rootLevelAssign(blocking, c);
+                    try rootLevelAssign(blocking, c);
                 }
             } else {
                 assert(c.literals.len > 1);
@@ -653,7 +654,8 @@ fn rootLevelPropagate() !bool {
                 const other = literals[0] ^ literals[1] ^ not_lit;
                 const other_value = values[lit2Idx(other)];
                 if (other_value > 0) {
-                    j[-1].blocking = other;
+                    const tmp = j - 1; // We cannot do j[-1]
+                    tmp[0].blocking = other;
                     continue;
                 }
                 var replacement: i64 = 0;
@@ -666,16 +668,16 @@ fn rootLevelPropagate() !bool {
                     if (replacement_value >= 0) break;
                 }
                 if (replacement_value >= 0) {
-                    try logClause(c.literals, "unwatching {d}", .{not_lit});
+                    try logClause(&c.literals, "unwatching {d}", .{not_lit});
                     literals[0] = other;
                     literals[1] = replacement;
                     r[0] = not_lit;
                     try watchLiteral(replacement, other, c);
                 } else if (other_value != 0) {
-                    try logClause(c, "root-level conflicting", .{});
+                    try logClause(&c.literals, "root-level conflicting", .{});
                     return false;
                 } else {
-                    rootLevelAssign(other, c);
+                    try rootLevelAssign(other, c);
                 }
             }
         }
@@ -690,7 +692,7 @@ fn rootLevelPropagate() !bool {
 }
 
 fn rootLevelAssign(lit: i64, reason: *const clause) !void {
-    try logClause(&reason.literals, "assign with reason: {d}", .{lit});
+    try logClause(&reason.literals, "root-level assign with reason: '{d}'", .{lit});
     assert(values[lit2Idx(lit)] == 0);
     assert(values[lit2Idx(-lit)] == 0);
     values[lit2Idx(lit)] = 1;
@@ -756,9 +758,11 @@ fn newWatch(binary: bool, blocking: i64, cls: *clause) !*watch {
 
 fn watchLiteral(lit: i64, blocking: i64, cls: *clause) !void {
     try logClause(&cls.literals, "watching {d} with blocking literal {d} in", .{ lit, blocking });
-    var ws = watches[lit2Idx(lit)];
-    for (ws.items) |w| {
-        assert(w.clause != cls);
+    var ws = &watches[lit2Idx(lit)];
+    if (debug) {
+        for (ws.items) |w| {
+            assert(w.clause != cls);
+        }
     }
     const wtch = try newWatch(cls.literals.len == 2, blocking, cls);
     try ws.append(wtch);
@@ -776,11 +780,12 @@ fn watchSatisfiedLiteral(lit: i64, cls: *clause) !void {
     const literals = cls.literals.ptr;
     const end = cls.literals.ptr + cls.literals.len;
     var l = literals;
-    while (assert(l != end) and l.* != lit) {
+    while (l[0] != lit) {
+        assert(l != end);
         l += 1;
     }
-    l.* = literals.*;
-    literals.* = lit;
+    l[0] = literals[0];
+    literals[0] = lit;
     const blocking = literals[1];
     try watchLiteral(lit, blocking, cls);
 }
@@ -877,8 +882,9 @@ fn deleteClause(cls: *clause) !void {
 
 fn simplify() !void {
     if (found_empty_clause) return;
-    for (occurrences) |*list| {
-        try list.resize(0);
+    for (0..2 * @as(usize, @intCast(variables))) |i| {
+        try occurrences[i].resize(0);
+        try watches[i].resize(0);
     }
     const begin: [*]*clause = clauses.items.ptr;
     const end: [*]*clause = clauses.items.ptr + clauses.items.len;
@@ -914,6 +920,9 @@ fn simplify() !void {
         try connectClause(c);
     }
     try clauses.resize((@intFromPtr(j) - @intFromPtr(begin)) / @sizeOf(*clause));
+    try trail.resize(0);
+    propagated = 0;
+    // assert(level == 0); // have not implemented level
 }
 
 fn next64() u64 {
@@ -1035,7 +1044,7 @@ fn makeClausesAlongOccurrences(lit: i64) !void {
             unsatisfied.items[d.pos] = d;
         }
         _ = unsatisfied.pop();
-        try makeClause(c);
+        try makeClause(c, lit);
         made += 1;
     }
     stats.made_clauses += made;
@@ -1043,9 +1052,10 @@ fn makeClausesAlongOccurrences(lit: i64) !void {
     try log("made {d} clauses with flipped {d}", .{ made, lit });
 }
 
-fn makeClause(cls: *clause) !void {
-    try logClause(&cls.literals, "made", .{});
+fn makeClause(cls: *clause, lit: i64) !void {
+    try logClause(&cls.literals, "made by {d}", .{lit});
     cls.pos = invalid_position;
+    try watchSatisfiedLiteral(lit, cls);
 }
 
 fn contains(cls: *clause, lit: i64) bool {
@@ -1071,7 +1081,7 @@ fn makeClausesAlongUnsatisfied(lit: i64) !void {
         i += 1;
         visited += 1;
         if (contains(c, lit)) {
-            try makeClause(c);
+            try makeClause(c, lit);
             made += 1;
         } else if (i != j) {
             c.pos = (@intFromPtr(j) - @intFromPtr(begin)) / @sizeOf(*clause);
@@ -1092,13 +1102,28 @@ fn breakClauses(lit: i64) !void {
     assert(values[lit2Idx(lit)] < 0);
     var broken: usize = 0;
     var visited: usize = 0;
-    for (occurrences[lit2Idx(lit)].items) |c| {
+    var ws = &watches[lit2Idx(lit)];
+    next_watch: for (ws.items) |w| {
         visited += 1;
-        if (!satisfied(c)) {
-            try breakClause(c);
-            broken += 1;
+        const c = w.clause;
+        const literals = c.literals.ptr;
+        const end = literals + c.literals.len;
+        assert(literals[0] == lit);
+        var l = literals + 1;
+        while (l != end) : (l += 1) {
+            const other = l[0];
+            const other_value = values[lit2Idx(other)];
+            if (other_value > 0) {
+                l[0] = lit;
+                literals[0] = other;
+                try watchLiteral(other, lit, c);
+                continue :next_watch;
+            }
         }
+        try breakClause(c);
+        broken += 1;
     }
+    try ws.resize(0);
     stats.broken_clauses += broken;
     stats.break_visited += visited;
     try log("broken {d} clauses with flipped {d}", .{ broken, lit });
@@ -1141,26 +1166,49 @@ fn breakClause(cls: *clause) !void {
 fn restart() !void {
     try log("restarting", .{});
     stats.restarts += 1;
-    for (1..@as(usize, @intCast(variables)) + 1) |idx| {
-        if (forced[idx]) continue;
-        const value: i2 = if (nextBool()) -1 else 1;
-        const i = @as(i64, @intCast(idx));
-        values[lit2Idx(i)] = value;
-        values[lit2Idx(-i)] = -value;
-        try log("assign {d} in restart", .{if (value < 0) -i else i});
+    for (watches) |*w| {
+        try w.resize(0);
     }
     for (unsatisfied.items) |c| {
         c.pos = invalid_position;
     }
     try unsatisfied.resize(0);
+    var idx: i64 = 1;
+    while (idx <= variables) : (idx += 1) {
+        if (forced[@as(usize, @intCast(idx))]) continue;
+        const value: i2 = if (nextBool()) -1 else 1;
+        values[lit2Idx(idx)] = value;
+        values[lit2Idx(-idx)] = -value;
+        try log("assign {d} in restart", .{if (value < 0) -idx else idx});
+    }
     var broken: usize = 0;
     var visited: usize = 0;
-    for (clauses.items) |c| {
+    next_watch: for (clauses.items) |c| {
         visited += 1;
-        if (!satisfied(c)) {
-            try breakClause(c);
-            broken += 1;
+        assert(c.literals.len > 1);
+        const literals = c.literals.ptr;
+        const lit = literals[0];
+        const lit_value = values[lit2Idx(lit)];
+        if (lit_value > 0) {
+            const other = literals[1];
+            try watchLiteral(lit, other, c);
+            continue :next_watch;
+        } else {
+            const end = literals + c.literals.len;
+            var l = literals + 1;
+            while (l != end) : (l += 1) {
+                const other = l[0];
+                const other_value = values[lit2Idx(other)];
+                if (other_value > 0) {
+                    l[0] = lit;
+                    literals[0] = other;
+                    try watchLiteral(other, lit, c);
+                    continue :next_watch;
+                }
+            }
         }
+        try breakClause(c);
+        broken += 1;
     }
     stats.broken_clauses += broken;
     stats.break_visited += visited;
@@ -1267,13 +1315,30 @@ fn critical(cls: *clause) bool {
 fn breakValue(lit: i64, max: usize) !usize {
     assert(values[lit2Idx(lit)] > 0);
     var res: usize = 0;
-    // var visited = 0; // not used in C++ code
-    for (occurrences[lit2Idx(lit)].items) |c| {
-        // visited += 1;
-        if (critical(c)) {
-            res += 1;
-            if (res == max) break;
+    var visited: usize = 0;
+    next_watch: for (watches[lit2Idx(lit)].items) |w| {
+        const blocking = w.blocking;
+        assert(blocking != lit);
+        if (values[lit2Idx(blocking)] > 0) continue;
+        if (!w.binary) {
+            visited += 1;
+            const c = w.clause;
+            const literals = c.literals.ptr;
+            const end = literals + c.literals.len;
+            assert(literals[0] == lit);
+            var l = literals + 1;
+            while (l != end) : (l += 1) {
+                const other = l[0];
+                assert(other != lit);
+                const other_value = values[lit2Idx(other)];
+                if (other_value > 0) {
+                    w.blocking = other;
+                    continue :next_watch;
+                }
+            }
         }
+        res += 1;
+        if (res == max) break;
     }
     stats.score_visited += 1;
     try log("break-value {d} of literal {d}", .{ res, lit });
@@ -1578,8 +1643,6 @@ fn free() void {
     original_lineno.deinit();
     min_break_value_literals.deinit();
     unsatisfied.deinit();
-    original_literals.deinit();
-    original_lineno.deinit();
 }
 
 pub fn main() !u8 {
