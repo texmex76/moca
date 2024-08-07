@@ -649,7 +649,7 @@ fn rootLevelPropagate() !bool {
                     try rootLevelAssign(blocking, c);
                 }
             } else {
-                assert(c.literals.len > 1);
+                assert(c.literals.len > 2);
                 const literals = c.literals;
                 const other = literals[0] ^ literals[1] ^ not_lit;
                 const other_value = values[lit2Idx(other)];
