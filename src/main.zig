@@ -64,7 +64,7 @@ var variables: i64 = 0;
 var found_empty_clause: bool = false;
 var clauses = ArrayList(*clause).init(allocator);
 var occurrences: []ArrayList(*clause) = undefined;
-var watches: []ArrayList(*watch) = undefined;
+var watches: []ArrayList(watch) = undefined;
 
 // Part of the state needed for parsing and unit propagation
 var simplified = ArrayList(i64).init(allocator);
@@ -114,8 +114,6 @@ var algorithm = algorithm_type.walksat_algorithm;
 // Parsing state
 var input_path: []const u8 = undefined;
 var input_path_seen = false;
-// var file: std.fs.File = undefined;
-// var input_file: std.fs.File.Reader = undefined;
 var lineno: u64 = 1;
 
 // Global Flags
@@ -682,6 +680,7 @@ fn rootLevelPropagate() !bool {
             }
         }
         while (i != end) {
+            assert(false); // Should be never reached
             j[0] = i[0];
             i += 1;
             j += 1;
@@ -748,14 +747,6 @@ fn newClause(literals: *ArrayList(i64)) !*clause {
     return cls;
 }
 
-fn newWatch(binary: bool, blocking: i64, cls: *clause) !*watch {
-    var wtch = try allocator.create(watch);
-    wtch.binary = binary;
-    wtch.blocking = blocking;
-    wtch.clause = cls;
-    return wtch;
-}
-
 fn watchLiteral(lit: i64, blocking: i64, cls: *clause) !void {
     try logClause(&cls.literals, "watching {d} with blocking literal {d} in", .{ lit, blocking });
     var ws = &watches[lit2Idx(lit)];
@@ -764,8 +755,11 @@ fn watchLiteral(lit: i64, blocking: i64, cls: *clause) !void {
             assert(w.clause != cls);
         }
     }
-    const wtch = try newWatch(cls.literals.len == 2, blocking, cls);
-    try ws.append(wtch);
+    try ws.append(watch{
+        .binary = cls.literals.len == 2,
+        .blocking = blocking,
+        .clause = cls,
+    });
 }
 
 fn watchTwoNonFalseLiteralsInClause(cls: *clause) !void {
@@ -862,9 +856,9 @@ fn initializeVariables() !void {
     for (occurrences) |*occ| {
         occ.* = ArrayList(*clause).init(allocator);
     }
-    watches = try allocator.alloc(ArrayList(*watch), 2 * v + 1);
+    watches = try allocator.alloc(ArrayList(watch), 2 * v + 1);
     for (watches) |*wtch_lst| {
-        wtch_lst.* = ArrayList(*watch).init(allocator);
+        wtch_lst.* = ArrayList(watch).init(allocator);
     }
     marks = try allocator.alloc(bool, 2 * v + 1);
     fill(bool, marks, false);
@@ -1316,7 +1310,7 @@ fn breakValue(lit: i64, max: usize) !usize {
     assert(values[lit2Idx(lit)] > 0);
     var res: usize = 0;
     var visited: usize = 0;
-    next_watch: for (watches[lit2Idx(lit)].items) |w| {
+    next_watch: for (watches[lit2Idx(lit)].items) |*w| {
         const blocking = w.blocking;
         assert(blocking != lit);
         if (values[lit2Idx(blocking)] > 0) continue;
@@ -1622,9 +1616,6 @@ fn free() void {
     }
     clauses.deinit();
     for (watches) |wtch_lst| {
-        for (wtch_lst.items) |wtch| {
-            allocator.destroy(wtch);
-        }
         wtch_lst.deinit();
     }
     for (occurrences) |occ| {
