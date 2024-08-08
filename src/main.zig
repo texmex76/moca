@@ -1618,6 +1618,7 @@ fn free() void {
     for (watches) |wtch_lst| {
         wtch_lst.deinit();
     }
+    allocator.free(watches);
     for (occurrences) |occ| {
         occ.deinit();
     }

@@ -26,6 +26,23 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "Run the moca local search solver");
     run_step.dependOn(&run_cmd.step);
 
+    // Fuzz
+    const fuzz_exe = b.addExecutable(.{
+        .name = "fuzz",
+        .root_source_file = b.path("src/fuzz.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    fuzz_exe.linkLibC();
+    b.installArtifact(fuzz_exe);
+    const run_fuzz = b.addRunArtifact(fuzz_exe);
+    run_fuzz.step.dependOn(b.getInstallStep());
+    if (b.args) |args| {
+        run_fuzz.addArgs(args);
+    }
+    const run_fuzz_step = b.step("fuzz", "Fuzz the local search solver");
+    run_fuzz_step.dependOn(&run_fuzz.step);
+
     // Checkmodel
     const check_exe = b.addExecutable(.{
         .name = "checkmodel",
