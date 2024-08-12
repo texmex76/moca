@@ -65,6 +65,7 @@ var found_empty_clause: bool = false;
 var clauses = ArrayList(*clause).init(allocator);
 var occurrences: []ArrayList(*clause) = undefined;
 var watches: []ArrayList(watch) = undefined;
+var parsing_finished = false;
 
 // Part of the state needed for parsing and unit propagation
 var simplified = ArrayList(i64).init(allocator);
@@ -212,7 +213,7 @@ fn options(args: [][:0]u8) !void {
                 return error.OptionsError;
             }
             if (thank_string_seen) {
-                try stderr.writer().print("'--thank {s}' and '-s {s}'", .{ thank_string, arg });
+                try stderr.writer().print("can't have '--thank {s}' and '-s {s}' simultaneously", .{ thank_string, arg });
                 return error.OptionsError;
             }
             generator = try std.fmt.parseUnsigned(u64, arg, 10);
@@ -345,9 +346,17 @@ fn banner() !void {
 fn catchSignal(sig: c_int) callconv(.C) void {
     termination_signal = sig;
     terminate = true;
+    // In the solve loop, we check every iteration if `terminate` is true
+    // If it is, we terminate gracefully
+    // But we also want to be able to terminate while parsing, hence the following
+    if (!parsing_finished) {
+        stdout.writer().print("c terminated by {s}\n", .{describeSignal()}) catch unreachable;
+        free();
+        std.process.abort();
+    }
 }
 
-fn init() void {
+fn setupSigaction() void {
     _ = os.linux.sigaction(os.linux.SIG.ALRM, &os.linux.Sigaction{
         .handler = .{ .handler = catchSignal },
         .mask = os.linux.empty_sigset,
@@ -611,6 +620,7 @@ fn parse(reader: anytype) !void {
     }
 
     try message("parsed {d} clauses in {d:.2} seconds", .{ stats.parsed, getTimeInSeconds() - start });
+    parsing_finished = true;
 }
 
 fn getTimeInSeconds() f64 {
@@ -1476,7 +1486,7 @@ fn solve() !u8 {
             res = 10;
         } else {
             if (terminate) {
-                try stdout.writer().print("c terminated by {s}\n", .{describeSignal(termination_signal)});
+                try stdout.writer().print("c terminated by {s}\n", .{describeSignal()});
             }
             try stdout.writeAll("s UNKNOWN\n");
             res = 0;
@@ -1485,8 +1495,8 @@ fn solve() !u8 {
     return res;
 }
 
-fn describeSignal(sig: c_int) []const u8 {
-    switch (sig) {
+fn describeSignal() []const u8 {
+    switch (termination_signal) {
         os.linux.SIG.INT => {
             return "stop signal (SIGINT)";
         },
@@ -1503,7 +1513,7 @@ fn describeSignal(sig: c_int) []const u8 {
             return "timeout signal (SIGALRM)";
         },
         else => {
-            return "unknown";
+            return "unknown signal";
         },
     }
 }
@@ -1638,6 +1648,7 @@ fn free() void {
 }
 
 pub fn main() !u8 {
+    setupSigaction();
     defer free();
     start_time = getTimeInSeconds();
     const args = try std.process.argsAlloc(allocator);
@@ -1647,7 +1658,6 @@ pub fn main() !u8 {
         else => return err,
     };
     try banner();
-    init();
     try selectReaderAndParse();
     try simplify();
     const res = try solve();
