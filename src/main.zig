@@ -1,12 +1,10 @@
 const std = @import("std");
 const os = std.os;
-const stdout = std.io.getStdOut();
-const stderr = std.io.getStdErr();
+// We'll have to make var out of these so we can reassign them in the testing
 const stdin = std.io.getStdIn();
 const ArrayList = std.ArrayList;
 const assert = std.debug.assert;
 const debug = @import("config").debug;
-const expect = @import("std").testing.expect;
 
 // var gpa = std.heap.GeneralPurposeAllocator(.{}){};
 // const allocator = gpa.allocator();
@@ -33,10 +31,6 @@ const Clause = struct {
     id: u64,
     pos: u64,
     literals: []i64,
-    fn print(self: *Clause) !void {
-        for (self.literals) |lit| try stdout.writer().print("{d} ", .{lit});
-        try stdout.writeAll("0\n");
-    }
 };
 
 const Watch = struct {
@@ -142,6 +136,8 @@ const Solver = struct {
     thank_string: []const u8 = "",
     thank_string_seen: bool = false,
     stats: Stats = .{},
+    stdout_writer: std.fs.File.Writer,
+    stderr_writer: std.fs.File.Writer,
     // for debugging
     start_of_clause_lineno: u64 = 0,
     original_literals: ArrayList(i64),
@@ -167,6 +163,8 @@ const Solver = struct {
             .scores = std.ArrayList(f64).init(alloc),
             .table = std.ArrayList(f64).init(alloc),
             .buffer = [_]u8{0} ** 256,
+            .stdout_writer = std.io.getStdOut().writer(),
+            .stderr_writer = std.io.getStdErr().writer(),
         };
     }
     pub fn deinit(self: *Solver) void {
@@ -214,7 +212,7 @@ fn options(solver: *Solver, args: [][:0]u8) !void {
     while (i != args.len) : (i += 1) {
         var arg = args[i];
         if (std.mem.eql(u8, arg, "-h")) {
-            try stdout.writer().print("{s}\n", .{usage});
+            try solver.stdout_writer.print("{s}\n", .{usage});
             return error.Help;
         } else if (std.mem.eql(u8, arg, "-v")) {
             solver.verbosity += @intFromBool(solver.verbosity != std.math.maxInt(i32));
@@ -223,12 +221,12 @@ fn options(solver: *Solver, args: [][:0]u8) !void {
         } else if (std.mem.eql(u8, arg, "-f")) {
             i += 1;
             if (i == args.len) {
-                try stderr.writeAll("argument to '-f' missing. (try '-h')\n");
+                try solver.stderr_writer.writeAll("argument to '-f' missing. (try '-h')\n");
                 return error.OptionsError;
             }
             arg = args[i];
             if (limit_string_seen) {
-                try stderr.writer().print("multiple '-f' options ('-f {s}' and '-f {s})\n", .{ limit_string, arg });
+                try solver.stderr_writer.print("multiple '-f' options ('-f {s}' and '-f {s})\n", .{ limit_string, arg });
                 return error.OptionsError;
             }
             solver.limit = try std.fmt.parseUnsigned(u64, arg, 10);
@@ -237,16 +235,16 @@ fn options(solver: *Solver, args: [][:0]u8) !void {
         } else if (std.mem.eql(u8, arg, "-s")) {
             i += 1;
             if (i == args.len) {
-                try stderr.writeAll("argument to '-s' missing. (try '-h')\n");
+                try solver.stderr_writer.writeAll("argument to '-s' missing. (try '-h')\n");
                 return error.OptionsError;
             }
             arg = args[i];
             if (seed_string_seen) {
-                try stderr.writer().print("multiple '-s' options ('-s {s}' and '-s {s}')\n", .{ seed_string, arg });
+                try solver.stderr_writer.print("multiple '-s' options ('-s {s}' and '-s {s}')\n", .{ seed_string, arg });
                 return error.OptionsError;
             }
             if (solver.thank_string_seen) {
-                try stderr.writer().print("can't have '--thank {s}' and '-s {s}' simultaneously", .{ solver.thank_string, arg });
+                try solver.stderr_writer.print("can't have '--thank {s}' and '-s {s}' simultaneously", .{ solver.thank_string, arg });
                 return error.OptionsError;
             }
             solver.generator = try std.fmt.parseUnsigned(u64, arg, 10);
@@ -255,16 +253,16 @@ fn options(solver: *Solver, args: [][:0]u8) !void {
         } else if (std.mem.eql(u8, arg, "--thank")) {
             i += 1;
             if (i == args.len) {
-                try stderr.writeAll("argument to '--thank' missing. (try '-h')\n");
+                try solver.stderr_writer.writeAll("argument to '--thank' missing. (try '-h')\n");
                 return error.OptionsError;
             }
             arg = args[i];
             if (solver.thank_string_seen) {
-                try stderr.writer().print("multiple '--thank' options ('--thank {s}' and '--thank {s}')", .{ solver.thank_string, arg });
+                try solver.stderr_writer.print("multiple '--thank' options ('--thank {s}' and '--thank {s}')", .{ solver.thank_string, arg });
                 return error.OptionsError;
             }
             if (seed_string_seen) {
-                try stderr.writer().print("'-s {s}' and '--thank {s}'", .{ seed_string, arg });
+                try solver.stderr_writer.print("'-s {s}' and '--thank {s}'", .{ seed_string, arg });
                 return error.OptionsError;
             }
             solver.thank_string = arg;
@@ -272,12 +270,12 @@ fn options(solver: *Solver, args: [][:0]u8) !void {
         } else if (std.mem.eql(u8, arg, "-t")) {
             i += 1;
             if (i == args.len) {
-                try stderr.writeAll("argument to '-t' missing. (try '-h')\n");
+                try solver.stderr_writer.writeAll("argument to '-t' missing. (try '-h')\n");
                 return error.OptionsError;
             }
             arg = args[i];
             if (timeout_string_seen) {
-                try stderr.writer().print("multiple '-t' options ('-t {s}' and '-t {s}')\n", .{ timeout_string, arg });
+                try solver.stderr_writer.print("multiple '-t' options ('-t {s}' and '-t {s}')\n", .{ timeout_string, arg });
                 return error.OptionsError;
             }
             const seconds = try std.fmt.parseUnsigned(c_uint, arg, 10);
@@ -288,7 +286,7 @@ fn options(solver: *Solver, args: [][:0]u8) !void {
             if (debug) {
                 solver.verbosity = std.math.maxInt(i32);
             } else {
-                try stderr.writeAll("invalid option '-l' (compiled without logging support)\n");
+                try solver.stderr_writer.writeAll("invalid option '-l' (compiled without logging support)\n");
                 return error.OptionsError;
             }
         } else if (std.mem.eql(u8, arg, "-n")) {
@@ -303,54 +301,54 @@ fn options(solver: *Solver, args: [][:0]u8) !void {
             solver.algorithm = AlgorithmType.walksat_algorithm;
         } else if (std.mem.eql(u8, arg, "--always-restart")) {
             if (restart_string_seen) {
-                try stderr.writeAll("you cannot combine different restart schedules\n");
+                try solver.stderr_writer.writeAll("you cannot combine different restart schedules\n");
                 return error.OptionsError;
             }
             solver.restart_scheduler = RestartSchedulerType.always_restart;
             restart_string_seen = true;
         } else if (std.mem.eql(u8, arg, "--never-restart")) {
             if (restart_string_seen) {
-                try stderr.writeAll("you cannot combine different restart schedules\n");
+                try solver.stderr_writer.writeAll("you cannot combine different restart schedules\n");
                 return error.OptionsError;
             }
             solver.restart_scheduler = RestartSchedulerType.never_restart;
             restart_string_seen = true;
         } else if (std.mem.eql(u8, arg, "--fixed-restart")) {
             if (restart_string_seen) {
-                try stderr.writeAll("you cannot combine different restart schedules\n");
+                try solver.stderr_writer.writeAll("you cannot combine different restart schedules\n");
                 return error.OptionsError;
             }
             solver.restart_scheduler = RestartSchedulerType.fixed_restart;
             restart_string_seen = true;
         } else if (std.mem.eql(u8, arg, "--reluctant-restart")) {
             if (restart_string_seen) {
-                try stderr.writeAll("you cannot combine different restart schedules\n");
+                try solver.stderr_writer.writeAll("you cannot combine different restart schedules\n");
                 return error.OptionsError;
             }
             solver.restart_scheduler = RestartSchedulerType.reluctant_restart;
             restart_string_seen = true;
         } else if (std.mem.eql(u8, arg, "--geometric-restart")) {
             if (restart_string_seen) {
-                try stderr.writeAll("you cannot combine different restart schedules\n");
+                try solver.stderr_writer.writeAll("you cannot combine different restart schedules\n");
                 return error.OptionsError;
             }
             solver.restart_scheduler = RestartSchedulerType.geometric_restart;
             restart_string_seen = true;
         } else if (std.mem.eql(u8, arg, "--arithmetic-restart")) {
             if (restart_string_seen) {
-                try stderr.writeAll("you cannot combine different restart schedules\n");
+                try solver.stderr_writer.writeAll("you cannot combine different restart schedules\n");
                 return error.OptionsError;
             }
             solver.restart_scheduler = RestartSchedulerType.arithmetic_restart;
             restart_string_seen = true;
         } else if (arg[0] == '-') {
-            try stderr.writer().print("invalid option '{s}' (try '-h')\n", .{arg});
+            try solver.stderr_writer.print("invalid option '{s}' (try '-h')\n", .{arg});
             return error.OptionsError;
         } else if (!solver.input_path_seen) {
             solver.input_path = arg;
             solver.input_path_seen = true;
         } else {
-            try stderr.writer().print("too many file arguments '{s}' and '{s}'\n", .{ solver.input_path, arg });
+            try solver.stderr_writer.print("too many file arguments '{s}' and '{s}'\n", .{ solver.input_path, arg });
             return error.OptionsError;
         }
     }
@@ -362,7 +360,7 @@ fn selectReaderAndParse(solver: *Solver) !void {
         solver.input_path = "<stdin>";
         try parse(solver, reader);
     } else if (hasSuffix(solver.input_path, ".bz2")) {
-        try stderr.writeAll("bzip2 not supported. sorry.\n");
+        try solver.stderr_writer.writeAll("bzip2 not supported. sorry.\n");
         return error.UnsupportedInputFormat;
     } else if (hasSuffix(solver.input_path, ".gz")) {
         const file = try std.fs.cwd().openFile(solver.input_path, .{});
@@ -402,14 +400,14 @@ fn parse(solver: *Solver, reader: anytype) !void {
     while (ch == 'c') : (ch = try next(solver, reader)) {
         while (ch != '\n') : (ch = try next(solver, reader)) {
             if (ch == 0) {
-                try stderr.writeAll("unexpected end-of-file in comment\n");
+                try solver.stderr_writer.writeAll("unexpected end-of-file in comment\n");
                 return error.ParseError;
             }
         }
     }
 
     if (ch != 'p') {
-        try stderr.writer().print("expected comment or header, got {c} ({d})\n", .{ ch, ch });
+        try solver.stderr_writer.print("expected comment or header, got {c} ({d})\n", .{ ch, ch });
         return error.ParseError;
     }
     const header = " cnf ";
@@ -418,7 +416,7 @@ fn parse(solver: *Solver, reader: anytype) !void {
         const c = p[0];
         p = p[1..];
         if (c != try next(solver, reader)) {
-            try stderr.writeAll("invalid header\n");
+            try solver.stderr_writer.writeAll("invalid header\n");
             return error.ParseError;
         }
     }
@@ -428,19 +426,19 @@ fn parse(solver: *Solver, reader: anytype) !void {
     ch = try next(solver, reader);
     while (std.ascii.isDigit(ch)) : (ch = try next(solver, reader)) {
         if (std.math.maxInt(i64) / 10 < solver.variables) {
-            try stderr.writeAll("too many variables specified in header");
+            try solver.stderr_writer.writeAll("too many variables specified in header");
             return error.ParseError;
         }
         solver.variables *= 10;
         const digit: i64 = (ch - '0');
         if (std.math.maxInt(i64) - digit < solver.variables) {
-            try stderr.writeAll("too many variables specified in header");
+            try solver.stderr_writer.writeAll("too many variables specified in header");
             return error.ParseError;
         }
         solver.variables += digit;
     }
     if (ch != ' ') {
-        try stderr.writeAll("extected white space");
+        try solver.stderr_writer.writeAll("extected white space");
         return error.ParseError;
     }
     ch = try next(solver, reader);
@@ -449,19 +447,19 @@ fn parse(solver: *Solver, reader: anytype) !void {
     ch = try next(solver, reader);
     while (std.ascii.isDigit(ch)) : (ch = try next(solver, reader)) {
         if (std.math.maxInt(i64) / 10 < expected) {
-            try stderr.writeAll("too many clauses specified in header");
+            try solver.stderr_writer.writeAll("too many clauses specified in header");
             return error.ParseError;
         }
         expected *= 10;
         const digit: i64 = (ch - '0');
         if (std.math.maxInt(i64) - digit < expected) {
-            try stderr.writeAll("too many clauses specified in header");
+            try solver.stderr_writer.writeAll("too many clauses specified in header");
             return error.ParseError;
         }
         expected += digit;
     }
     if (ch != '\n') {
-        try stderr.writeAll("expected new-line");
+        try solver.stderr_writer.writeAll("expected new-line");
         return error.ParseError;
     }
     try message(solver, "found 'p cnf {d} {d}' header", .{ solver.variables, expected });
@@ -484,30 +482,30 @@ fn parse(solver: *Solver, reader: anytype) !void {
             solver.start_of_clause_lineno = solver.lineno;
         }
         if (solver.stats.parsed == expected) {
-            try stderr.writeAll("specified clauses exceeded\n");
+            try solver.stderr_writer.writeAll("specified clauses exceeded\n");
             return error.ParseError;
         }
         lit = ch - '0';
         ch = try next(solver, reader);
         while (std.ascii.isDigit(ch)) : (ch = try next(solver, reader)) {
             if (std.math.maxInt(i64) / 10 < lit) {
-                try stderr.writeAll("literal too large\n");
+                try solver.stderr_writer.writeAll("literal too large\n");
                 return error.ParseError;
             }
             lit *= 10;
             const digit = ch - '0';
             if (std.math.maxInt(i64) - @as(i64, @intCast(digit)) < lit) {
-                try stderr.writeAll("literal too large\n");
+                try solver.stderr_writer.writeAll("literal too large\n");
                 return error.ParseError;
             }
             lit += digit;
         }
         if (ch != ' ' and ch != '\n') {
-            try stderr.writeAll("expected white-space\n");
+            try solver.stderr_writer.writeAll("expected white-space\n");
             return error.ParseError;
         }
         if (lit > solver.variables) {
-            try stderr.writer().print("invalid variable {d}\n", .{lit});
+            try solver.stderr_writer.print("invalid variable {d}\n", .{lit});
             return error.ParseError;
         }
         lit *= sign;
@@ -551,11 +549,11 @@ fn parse(solver: *Solver, reader: anytype) !void {
         }
     }
     if (lit != 0) {
-        try stdout.writeAll("zero missing\n");
+        try solver.stdout_writer.writeAll("zero missing\n");
         return error.ParseError;
     }
     if (solver.stats.parsed != expected) {
-        try stdout.writeAll("clause missing\n");
+        try solver.stdout_writer.writeAll("clause missing\n");
         return error.ParseError;
     }
 
@@ -611,9 +609,9 @@ fn simplify(solver: *Solver) !void {
 fn message(solver: *Solver, comptime fmt: []const u8, args: anytype) !void {
     if (solver.verbosity < 0)
         return;
-    try stdout.writeAll("c ");
-    try stdout.writer().print(fmt, args);
-    try stdout.writeAll("\n");
+    try solver.stdout_writer.writeAll("c ");
+    try solver.stdout_writer.print(fmt, args);
+    try solver.stdout_writer.writeAll("\n");
 }
 fn banner(solver: *Solver) !void {
     try message(solver, "BabyWalk Local Search SAT Solver", .{});
@@ -621,16 +619,16 @@ fn banner(solver: *Solver) !void {
 fn verbose(solver: *Solver, trigger_at_v: i32, comptime fmt: []const u8, args: anytype) !void {
     if (trigger_at_v > solver.verbosity)
         return;
-    try stdout.writeAll("c ");
-    try stdout.writer().print(fmt, args);
-    try stdout.writeAll("\n");
+    try solver.stdout_writer.writeAll("c ");
+    try solver.stdout_writer.print(fmt, args);
+    try solver.stdout_writer.writeAll("\n");
 }
 fn catchSignal(sig: c_int) callconv(.C) void {
     if (global_solver) |solver| {
         solver.termination_signal = sig;
         solver.terminate = true;
         if (!solver.parsing_finished) {
-            stdout.writer().print("c terminated by {s}\n", .{describeSignal(global_solver.?)}) catch {};
+            solver.stdout_writer.print("c terminated by {s}\n", .{describeSignal(global_solver.?)}) catch {};
             solver.deinit();
             std.process.abort();
         }
@@ -664,7 +662,7 @@ fn next(solver: *Solver, reader: anytype) !u8 {
     if (ch == '\r') {
         ch = reader.readByte() catch 0;
         if (ch != '\n') {
-            try stderr.writeAll("expected new-line after carriage return\n");
+            try solver.stderr_writer.writeAll("expected new-line after carriage return\n");
             return error.NoNewLineAfterCarriageReturn;
         }
     }
@@ -845,11 +843,11 @@ fn logClause(solver: *Solver, cls: *const []i64, comptime format: []const u8, ar
         defer solver.allocator.free(buf);
         _ = try std.fmt.bufPrint(buf, format, args);
         if (solver.verbosity == std.math.maxInt(i32)) {
-            try stdout.writer().print("c LOG {s} ", .{buf});
+            try solver.stdout_writer.print("c LOG {s} ", .{buf});
             for (cls.*) |lit| {
-                try stdout.writer().print("{d} ", .{lit});
+                try solver.stdout_writer.print("{d} ", .{lit});
             }
-            try stdout.writeAll("\n");
+            try solver.stdout_writer.writeAll("\n");
         }
     }
 }
@@ -857,9 +855,9 @@ fn logClause(solver: *Solver, cls: *const []i64, comptime format: []const u8, ar
 fn log(solver: *Solver, comptime fmt: []const u8, args: anytype) !void {
     if (debug) {
         if (solver.verbosity == std.math.maxInt(i32)) {
-            try stdout.writeAll("c LOG ");
-            try stdout.writer().print(fmt, args);
-            try stdout.writeAll("\n");
+            try solver.stdout_writer.writeAll("c LOG ");
+            try solver.stdout_writer.print(fmt, args);
+            try solver.stdout_writer.writeAll("\n");
         }
     }
 }
@@ -1439,7 +1437,7 @@ fn solve(solver: *Solver) !u8 {
     try initializeRestart(solver);
     var res: u8 = 0;
     if (solver.found_empty_clause) {
-        try stdout.writeAll("s UNSATISFIABLE\n");
+        try solver.stdout_writer.writeAll("s UNSATISFIABLE\n");
         res = 20;
     } else {
         switch (solver.algorithm) {
@@ -1461,14 +1459,14 @@ fn solve(solver: *Solver) !u8 {
             if (debug) {
                 try checkOriginalClausesSatisfied(solver);
             }
-            try stdout.writeAll("s SATISFIABLE\n");
+            try solver.stdout_writer.writeAll("s SATISFIABLE\n");
             if (!solver.do_not_print_model) try printValues(solver);
             res = 10;
         } else {
             if (solver.terminate) {
-                try stdout.writer().print("c terminated by {s}\n", .{describeSignal(solver)});
+                try solver.stdout_writer.print("c terminated by {s}\n", .{describeSignal(solver)});
             }
-            try stdout.writeAll("s UNKNOWN\n");
+            try solver.stdout_writer.writeAll("s UNKNOWN\n");
             res = 0;
         }
     }
@@ -1519,9 +1517,9 @@ fn printValue(solver: *Solver, lit: i64) !void {
 }
 
 fn flushBuffer(solver: *Solver) !void {
-    try stdout.writeAll("v");
-    try stdout.writer().print("{s}", .{solver.buffer[0..solver.buffer_len]});
-    try stdout.writeAll("\n");
+    try solver.stdout_writer.writeAll("v");
+    try solver.stdout_writer.print("{s}", .{solver.buffer[0..solver.buffer_len]});
+    try solver.stdout_writer.writeAll("\n");
     solver.buffer_len = 0;
 }
 
@@ -1540,11 +1538,11 @@ fn checkOriginalClausesSatisfied(solver: *Solver) !void {
             is_satisfied = false;
             id += 1;
         } else {
-            try stderr.writer().print("babywalk: fatal error: original clause[{d}] at line {d} unsatisfied:\n", .{ id + 1, solver.original_lineno.items[id] });
+            try solver.stderr_writer.print("babywalk: fatal error: original clause[{d}] at line {d} unsatisfied:\n", .{ id + 1, solver.original_lineno.items[id] });
             for (start_of_last_clause..i) |j| {
-                try stderr.writer().print("{d} ", .{solver.original_literals.items[j]});
+                try solver.stderr_writer.print("{d} ", .{solver.original_literals.items[j]});
             }
-            try stderr.writeAll("\n");
+            try solver.stderr_writer.writeAll("\n");
             return error.FatalError;
         }
     }
@@ -1552,14 +1550,24 @@ fn checkOriginalClausesSatisfied(solver: *Solver) !void {
 fn report(solver: *Solver) !void {
     if (solver.verbosity < 0) return;
     const elapsed = getTimeInSeconds() - solver.start_time;
-    try stdout.writer().print("c {s: <21} {d:13} {d:14.2} flipped/restart\n", .{ "restarts:", solver.stats.restarts, averageI(solver.stats.flipped, solver.stats.restarts) });
-    try stdout.writer().print("c {s: <21} {d:13} {d:14.2} per second\n", .{ "flipped-variables:", solver.stats.flipped, @as(f64, @floatFromInt(solver.stats.flipped)) / elapsed });
-    try stdout.writer().print("c {s: <21} {d:13} {d:14.2} % flipped\n", .{ "random-walks:", solver.stats.random_walks, percentI(solver.stats.random_walks, solver.stats.flipped) });
-    try stdout.writer().print("c {s: <21} {d:13} {d:14.2} per flip\n", .{ "made-clauses:", solver.stats.made_clauses, averageI(solver.stats.made_clauses, solver.stats.flipped) });
-    try stdout.writer().print("c {s: <21} {d:13} {d:14.2} per flip\n", .{ "make-visited:", solver.stats.make_visited, averageI(solver.stats.make_visited, solver.stats.flipped) });
-    try stdout.writer().print("c {s: <21} {d:13} {d:14.2} per flip\n", .{ "broken-clauses:", solver.stats.broken_clauses, averageI(solver.stats.broken_clauses, solver.stats.flipped) });
-    try stdout.writer().print("c {s: <21} {d:13} {d:14.2} per flip\n", .{ "break-visited:", solver.stats.break_visited, averageI(solver.stats.break_visited, solver.stats.flipped) });
-    try stdout.writer().print("c {s: <21} {d:28.2} seconds\n", .{ "process-time:", elapsed });
+    try solver.stdout_writer.print("c {s: <21} {d:13} {d:14.2} flipped/restart\n", .{ "restarts:", solver.stats.restarts, averageI(solver.stats.flipped, solver.stats.restarts) });
+    try solver.stdout_writer.print("c {s: <21} {d:13} {d:14.2} per second\n", .{ "flipped-variables:", solver.stats.flipped, @as(f64, @floatFromInt(solver.stats.flipped)) / elapsed });
+    try solver.stdout_writer.print("c {s: <21} {d:13} {d:14.2} % flipped\n", .{ "random-walks:", solver.stats.random_walks, percentI(solver.stats.random_walks, solver.stats.flipped) });
+    try solver.stdout_writer.print("c {s: <21} {d:13} {d:14.2} per flip\n", .{ "made-clauses:", solver.stats.made_clauses, averageI(solver.stats.made_clauses, solver.stats.flipped) });
+    try solver.stdout_writer.print("c {s: <21} {d:13} {d:14.2} per flip\n", .{ "make-visited:", solver.stats.make_visited, averageI(solver.stats.make_visited, solver.stats.flipped) });
+    try solver.stdout_writer.print("c {s: <21} {d:13} {d:14.2} per flip\n", .{ "broken-clauses:", solver.stats.broken_clauses, averageI(solver.stats.broken_clauses, solver.stats.flipped) });
+    try solver.stdout_writer.print("c {s: <21} {d:13} {d:14.2} per flip\n", .{ "break-visited:", solver.stats.break_visited, averageI(solver.stats.break_visited, solver.stats.flipped) });
+    try solver.stdout_writer.print("c {s: <21} {d:28.2} seconds\n", .{ "process-time:", elapsed });
+}
+
+pub fn runSolver(solver: *Solver) !u8 {
+    try banner(solver);
+    try selectReaderAndParse(solver);
+    try simplify(solver);
+    const result = try solve(solver);
+    try report(solver);
+    try goodbye(solver, result);
+    return result;
 }
 
 fn hasSuffix(str: []const u8, suffix: []const u8) bool {
@@ -1570,7 +1578,7 @@ fn hasSuffix(str: []const u8, suffix: []const u8) bool {
 
 fn expectDigit(ch: u8) !void {
     if (!std.ascii.isDigit(ch)) {
-        try stderr.writeAll("extected digit");
+        // TODO: Give error message
         return error.ParseError;
     }
 }
@@ -1625,22 +1633,16 @@ pub fn main() !u8 {
     const allocator = std.heap.c_allocator;
     var solver = try Solver.init(allocator);
     defer solver.deinit();
-    global_solver = &solver;
-    setupSigaction(&solver);
-    solver.start_time = getTimeInSeconds();
+
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
+
     options(&solver, args) catch |err| switch (err) {
         error.Help => return 0,
         else => return err,
     };
-    try banner(&solver);
-    try selectReaderAndParse(&solver);
-    try simplify(&solver);
-    const res = try solve(&solver);
-    try report(&solver);
-    try goodbye(&solver, res);
-    return res;
+
+    return runSolver(&solver);
 }
 
 fn writeToFile(filename: []const u8, contents: []const u8) !void {
@@ -1652,36 +1654,33 @@ fn writeToFile(filename: []const u8, contents: []const u8) !void {
 }
 
 fn runTest(allocator: std.mem.Allocator, expected: u8, filename: []const u8) !void {
-    const cnf_name_buf = try allocator.alloc(u8, std.fmt.count("test/{s}.cnf", .{filename}));
-    defer allocator.free(cnf_name_buf);
-    _ = try std.fmt.bufPrint(cnf_name_buf, "test/{s}.cnf", .{filename});
+    const cnf_path = try std.fmt.allocPrint(allocator, "test/{s}.cnf", .{filename});
+    defer allocator.free(cnf_path);
+    const log_path = try std.fmt.allocPrint(allocator, "test/{s}.log", .{filename});
+    defer allocator.free(log_path);
+    const err_path = try std.fmt.allocPrint(allocator, "test/{s}.err", .{filename});
+    defer allocator.free(err_path);
+    const chm_path = try std.fmt.allocPrint(allocator, "test/{s}.chm", .{filename});
+    defer allocator.free(chm_path);
 
-    const log_name_buf = try allocator.alloc(u8, std.fmt.count("test/{s}.log", .{filename}));
-    defer allocator.free(log_name_buf);
-    _ = try std.fmt.bufPrint(log_name_buf, "test/{s}.log", .{filename});
+    const out_file = try std.fs.cwd().createFile(log_path, .{ .truncate = true });
+    defer out_file.close();
+    const err_file = try std.fs.cwd().createFile(err_path, .{ .truncate = true });
+    defer err_file.close();
 
-    const err_name_buf = try allocator.alloc(u8, std.fmt.count("test/{s}.err", .{filename}));
-    defer allocator.free(err_name_buf);
-    _ = try std.fmt.bufPrint(err_name_buf, "test/{s}.err", .{filename});
+    var solver = try Solver.init(allocator);
+    defer solver.deinit();
+    solver.stdout_writer = out_file.writer();
+    solver.stderr_writer = err_file.writer();
+    solver.input_path = cnf_path;
+    solver.input_path_seen = true;
 
-    const chm_name_buf = try allocator.alloc(u8, std.fmt.count("test/{s}.chm", .{filename}));
-    defer allocator.free(chm_name_buf);
-    _ = try std.fmt.bufPrint(chm_name_buf, "test/{s}.chm", .{filename});
+    const ret = try runSolver(&solver);
 
-    const argv = [_][]const u8{ "zig-out/bin/moca", cnf_name_buf };
-    const proc = try std.process.Child.run(.{
-        .allocator = allocator,
-        .argv = &argv,
-    });
-    defer allocator.free(proc.stdout);
-    defer allocator.free(proc.stderr);
-
-    try writeToFile(log_name_buf, proc.stdout);
-    try writeToFile(err_name_buf, proc.stderr);
-    if (proc.term.Exited != expected) return error.SATSolverWrongReturnCode;
+    if (ret != expected) return error.SATSolverWrongReturnCode;
 
     if (expected == 10) {
-        const argv2 = [_][]const u8{ "zig-out/bin/checkmodel", cnf_name_buf, log_name_buf };
+        const argv2 = [_][]const u8{ "zig-out/bin/checkmodel", cnf_path, log_path };
         const proc2 = try std.process.Child.run(.{
             .allocator = allocator,
             .argv = &argv2,
@@ -1689,8 +1688,8 @@ fn runTest(allocator: std.mem.Allocator, expected: u8, filename: []const u8) !vo
         defer allocator.free(proc2.stdout);
         defer allocator.free(proc2.stderr);
 
-        try writeToFile(chm_name_buf, proc2.stdout);
-        try writeToFile(err_name_buf, proc2.stderr);
+        try writeToFile(chm_path, proc2.stdout);
+        try writeToFile(err_path, proc2.stderr);
         if (proc2.term.Exited != 0) return error.CheckmodelWrongReturnCode;
     }
 }
