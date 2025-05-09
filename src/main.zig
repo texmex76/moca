@@ -528,6 +528,7 @@ fn parse(solver: *Solver, reader: anytype) !void {
                     assert(!solver.found_empty_clause);
                     try verbose(solver, 1, "found_empty_clause", .{});
                     solver.found_empty_clause = true;
+                    solver.allocator.destroy(c);
                 } else if (size == 1) {
                     const unit = c.literals[0];
                     try logClause(solver, &c.literals, "found unit", .{});
